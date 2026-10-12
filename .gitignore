@@ -1,0 +1,51 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Xx]64/
+[Xx]86/
+[Aa]rm/
+[Aa]rm64/
+[Aa]rtifacts/
+publish/
+TestResults/
+coverage/
+BenchmarkDotNet.Artifacts/
+
+# .NET tooling
+project.lock.json
+project.fragment.lock.json
+artifacts/
+*.coverage
+*.coveragexml
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+!**/packages/build/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider / ReSharper
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries/
+.idea/**/shelf/
+.idea/**/contentModel.xml
+.idea/**/projectSettingsUpdater.xml
+*.iml
+/_ReSharper.Caches/
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
