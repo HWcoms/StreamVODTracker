@@ -1,9 +1,300 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:StreamVODTracker"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
+        mc:Ignorable="d" d:DesignWidth="1280" d:DesignHeight="820"
         x:Class="StreamVODTracker.MainWindow"
-        Title="StreamVODTracker">
-    Welcome to Avalonia!
+        Title="VOD Tracker" Width="1280" Height="820" MinWidth="980" MinHeight="640"
+        Background="{DynamicResource AppBackgroundBrush}">
+    <Window.Resources>
+        <SolidColorBrush x:Key="AppBackgroundBrush" Color="#F5F6FA" />
+        <SolidColorBrush x:Key="SidebarBackgroundBrush" Color="#171923" />
+        <SolidColorBrush x:Key="MainSurfaceBrush" Color="White" />
+        <SolidColorBrush x:Key="InsetSurfaceBrush" Color="#F7F7FA" />
+        <SolidColorBrush x:Key="CardSurfaceBrush" Color="White" />
+        <SolidColorBrush x:Key="MainBorderBrush" Color="#E8E9EF" />
+        <SolidColorBrush x:Key="SoftBorderBrush" Color="#E5E6ED" />
+        <SolidColorBrush x:Key="PrimaryTextBrush" Color="#202230" />
+        <SolidColorBrush x:Key="SecondaryTextBrush" Color="#777B8B" />
+        <SolidColorBrush x:Key="CardTitleBrush" Color="#292B3A" />
+        <SolidColorBrush x:Key="LicenseSurfaceBrush" Color="#F4F1FF" />
+        <SolidColorBrush x:Key="LicenseBorderBrush" Color="#DDD6FF" />
+        <SolidColorBrush x:Key="LicenseTitleBrush" Color="#4934A6" />
+        <SolidColorBrush x:Key="LicenseBodyBrush" Color="#55596A" />
+        <SolidColorBrush x:Key="ThemeButtonBackgroundBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="ThemeButtonForegroundBrush" Color="#252836" />
+    </Window.Resources>
+    <Grid ColumnDefinitions="240,*">
+        <Border Grid.Column="0" Background="{DynamicResource SidebarBackgroundBrush}" Padding="20,24">
+            <Grid RowDefinitions="Auto,Auto,*,Auto">
+                <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,0,0,34">
+                    <Border Width="38" Height="38" CornerRadius="12" Background="#7C5CFC">
+                        <TextBlock Text="V" Foreground="White" FontSize="21" FontWeight="Bold"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Spacing="1">
+                        <TextBlock Text="VOD TRACKER" Foreground="White" FontSize="14" FontWeight="Bold" />
+                        <TextBlock Text="PERSONAL LIBRARY" Foreground="#85899B" FontSize="10" />
+                    </StackPanel>
+                </StackPanel>
+
+                <TextBlock Grid.Row="1" Text="내 라이브러리" Foreground="#85899B" FontSize="11"
+                           FontWeight="Bold" Margin="4,0,0,10" />
+                <StackPanel Grid.Row="2" Spacing="6">
+                    <Button Classes="nav" Tag="all" Click="Navigation_Click">
+                        <StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="⌂"/><TextBlock Text="전체 보관함"/></StackPanel>
+                    </Button>
+                    <Button Classes="nav" Tag="chzzk" Click="Navigation_Click">
+                        <StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="◉"/><TextBlock Text="치지직"/></StackPanel>
+                    </Button>
+                    <Button Classes="nav" Tag="soop" Click="Navigation_Click">
+                        <StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="◉"/><TextBlock Text="SOOP"/></StackPanel>
+                    </Button>
+                </StackPanel>
+
+                <Border Grid.Row="3" BorderBrush="#303342" BorderThickness="0,1,0,0" Padding="0,18,0,0">
+                    <StackPanel Spacing="8">
+                    <Button Content="⚙  플랫폼 API 설정" Classes="nav" Click="OpenSettings_Click" />
+                        <TextBlock Text="서버 연결" Foreground="#85899B" FontSize="11" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Ellipse Width="8" Height="8" Fill="#E3A94B" VerticalAlignment="Center" />
+                            <TextBlock Text="로컬 데이터베이스 준비 중" Foreground="#D2D4DC" FontSize="11" />
+                        </StackPanel>
+                        <Border BorderBrush="#303342" BorderThickness="0,1,0,0" Margin="0,10,0,0" Padding="0,10,0,0">
+                            <Button Classes="nav" Tag="licenses" Click="Navigation_Click">
+                                <StackPanel Orientation="Horizontal" Spacing="12">
+                                    <TextBlock Text="ⓘ" />
+                                    <TextBlock Text="라이선스 및 오픈소스 고지" />
+                                </StackPanel>
+                            </Button>
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Column="1" RowDefinitions="Auto,*" Margin="34,28,34,28">
+            <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,24">
+                <StackPanel Spacing="5">
+                    <TextBlock x:Name="PageTitle" Text="치지직" FontSize="26" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                    <TextBlock x:Name="PageDescription" Text="치지직 채널과 영상을 관리하세요." FontSize="13" Foreground="{DynamicResource SecondaryTextBrush}" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="ThemeToggleButton" Content="☀" Width="40" Height="40" Padding="0"
+                            Background="{DynamicResource ThemeButtonBackgroundBrush}"
+                            Foreground="{DynamicResource ThemeButtonForegroundBrush}"
+                            BorderBrush="{DynamicResource MainBorderBrush}" BorderThickness="1"
+                            CornerRadius="10" FontSize="24"
+                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                            Click="ThemeToggle_Click"
+                            ToolTip.Tip="다크 모드로 전환" />
+                    <Button x:Name="AddMediaButton" Content="＋ 추가" Classes="primary" Click="AddMenu_Click" />
+                </StackPanel>
+            </Grid>
+
+            <Border Grid.Row="1" Background="{DynamicResource MainSurfaceBrush}" CornerRadius="16" BorderBrush="{DynamicResource MainBorderBrush}" BorderThickness="1" Padding="22">
+                <Grid RowDefinitions="Auto,Auto,*">
+                    <TabControl x:Name="PlatformTabs" SelectionChanged="PlatformTabs_SelectionChanged">
+                        <TabItem Header="치지직" Tag="chzzk" />
+                        <TabItem Header="SOOP" Tag="soop" />
+                    </TabControl>
+
+                    <Grid Grid.Row="1" x:Name="SearchFiltersPanel" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10" Margin="0,18,0,18">
+                        <TextBox x:Name="SearchBox" PlaceholderText="제목 또는 채널 검색" MinHeight="38" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" />
+                        <ComboBox Grid.Column="1" x:Name="StatusFilter" SelectedIndex="0" MinWidth="128" VerticalContentAlignment="Center">
+                            <ComboBoxItem Content="모든 시청 상태" />
+                            <ComboBoxItem Content="안 봄" />
+                            <ComboBoxItem Content="보는 중" />
+                            <ComboBoxItem Content="다 봄" />
+                        </ComboBox>
+                        <ComboBox Grid.Column="2" x:Name="SortOrder" SelectedIndex="0" MinWidth="128" VerticalContentAlignment="Center">
+                            <ComboBoxItem Content="최근 추가순" />
+                            <ComboBoxItem Content="제목순" />
+                            <ComboBoxItem Content="게시일순" />
+                        </ComboBox>
+                    </Grid>
+
+                    <Grid Grid.Row="2" x:Name="LibraryPanel" ColumnDefinitions="230,*" ColumnSpacing="22">
+                        <Border Background="{DynamicResource InsetSurfaceBrush}" CornerRadius="12" Padding="16">
+                            <Grid RowDefinitions="Auto,Auto,*">
+                                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,12">
+                                    <TextBlock Text="채널" FontSize="14" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
+                                    <Button Grid.Column="1" Content="채널 추가" MinWidth="82" Height="32" Padding="8,4" Click="AddChannel_Click" ToolTip.Tip="채널 ID 또는 주소로 채널 추가" />
+                                </Grid>
+                                <TextBlock Grid.Row="1" Text="치지직과 SOOP 채널을 추가하면 여기에 목록이 표시됩니다." TextWrapping="Wrap" FontSize="12" Foreground="#898D9B" Margin="0,0,0,12" />
+                                <Grid Grid.Row="2">
+                                    <Border x:Name="ChannelEmptyState" BorderBrush="#E4E5EB" BorderThickness="0,1,0,0" Padding="0,12,0,0">
+                                        <TextBlock Text="등록된 채널이 없습니다." FontSize="12" Foreground="#A0A3AF" />
+                                    </Border>
+                                    <ScrollViewer x:Name="ChannelScroller" IsVisible="False">
+                                        <ItemsControl x:Name="ChannelCards">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="local:ChannelEntry">
+                                                            <Border Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="9"
+                                                            Padding="11" Margin="0,0,0,8" PointerPressed="ChannelCard_PointerPressed">
+                                                        <Grid ColumnDefinitions="58,*" ColumnSpacing="10">
+                                                            <Border Width="54" Height="54" CornerRadius="27" BorderThickness="3"
+                                                                    BorderBrush="{Binding AvatarBorderBrush}" Padding="3"
+                                                                    HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                                <Border Width="42" Height="42" CornerRadius="21" ClipToBounds="True" Background="#F0EDFF">
+                                                                    <Grid>
+                                                                        <TextBlock Text="{Binding Initial}" Foreground="#684ED8" FontSize="16"
+                                                                                   FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                        <Image Source="{Binding ProfileImage}" Stretch="Uniform"
+                                                                               IsVisible="{Binding HasProfileImage}"
+                                                                               PointerPressed="ChannelAvatar_PointerPressed" />
+                                                                    </Grid>
+                                                                </Border>
+                                                            </Border>
+                                                            <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
+                                                                <Grid ColumnDefinitions="*,Auto">
+                                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
+                                                                               TextTrimming="CharacterEllipsis" />
+                                                                    <TextBlock Grid.Column="1" Text="{Binding Platform}" FontSize="9" Foreground="#7156E8" />
+                                                                </Grid>
+                                                                <TextBlock Text="{Binding Description}" FontSize="10" Foreground="{DynamicResource SecondaryTextBrush}"
+                                                                           TextWrapping="Wrap" MaxLines="3" />
+                                                            </StackPanel>
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </Grid>
+                            </Grid>
+                        </Border>
+
+                            <Grid Grid.Column="1" RowDefinitions="Auto,*">
+                            <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,12">
+                                <StackPanel Spacing="3">
+                                    <TextBlock x:Name="ListTitle" Text="치지직 영상" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                    <TextBlock Text="플랫폼별 등록 영상을 카드로 모아 보여줍니다." FontSize="11" Foreground="#898D9B" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="RefreshChannelButton" Content="새로고침" Click="RefreshChannelVideos_Click" IsVisible="False" />
+                                    <Button x:Name="DirectAddButton" Content="직접추가" Click="DirectAddChannelVideo_Click" IsVisible="False" />
+                                </StackPanel>
+                            </Grid>
+                            <Grid Grid.Row="1">
+                            <Border x:Name="EmptyState" BorderBrush="#ECECF1" BorderThickness="0,1,0,0">
+                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10" MaxWidth="340">
+                                    <Border Width="56" Height="56" CornerRadius="18" Background="#F0EDFF" HorizontalAlignment="Center">
+                                        <TextBlock Text="▤" FontSize="25" Foreground="#7C5CFC" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
+                                            <TextBlock Text="아직 등록된 영상이 없습니다" FontSize="17" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
+                                               HorizontalAlignment="Center" />
+                                    <TextBlock Text="온라인 링크 또는 PC에 있는 영상 파일을 추가해 보세요.\n두 가지 방식 모두 치지직과 SOOP 탭에서 사용할 수 있습니다."
+                                               FontSize="12" Foreground="#85899B" TextAlignment="Center" TextWrapping="Wrap" HorizontalAlignment="Center" />
+                                    <Button x:Name="EmptyStateAddButton" Content="＋  영상 추가하기" Classes="primary" Margin="0,6,0,0" Click="AddMenu_Click" />
+                                    <StackPanel x:Name="ChannelEmptyActions" Orientation="Horizontal" Spacing="10" IsVisible="False" HorizontalAlignment="Center">
+                                        <Button Content="새로고침" Click="RefreshChannelVideos_Click" />
+                                        <Button Content="직접추가" Classes="primary" Click="DirectAddChannelVideo_Click" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                            <ScrollViewer x:Name="CardsScroller" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
+                                <ItemsControl x:Name="CardsList">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="local:MediaCard">
+                                            <Border Width="286" MinHeight="174" Margin="0,16,16,0" Padding="17"
+                                                    Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
+                                                    PointerPressed="MediaCard_PointerPressed">
+                                                <Grid RowDefinitions="Auto,*,Auto">
+                                                    <Grid ColumnDefinitions="*,Auto">
+                                                        <Border Background="#F0EDFF" CornerRadius="6" Padding="8,4" HorizontalAlignment="Left">
+                                                            <TextBlock Text="{Binding PlatformLabel}" Foreground="#684ED8" FontSize="10" FontWeight="Bold" />
+                                                        </Border>
+                                                        <TextBlock Grid.Column="1" Text="{Binding SourceTypeLabel}" Foreground="#8A8D9A" FontSize="10" VerticalAlignment="Center" />
+                                                    </Grid>
+                                                    <StackPanel Grid.Row="1" Spacing="7" Margin="0,17,0,14">
+                                                        <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
+                                                                   TextTrimming="CharacterEllipsis" MaxLines="2" />
+                                                        <TextBlock Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                    </StackPanel>
+                                                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                                                        <TextBlock Text="{Binding AvailabilityLabel}" FontSize="11" Foreground="#8A8D9A" VerticalAlignment="Center" />
+                                                        <TextBlock Grid.Column="1" Text="{Binding PublishedAtLabel}" FontSize="10" Foreground="#8A8D9A" VerticalAlignment="Center" />
+                                                        <TextBlock Grid.Column="2" Text="{Binding WatchStatusLabel}" FontSize="11" Foreground="#7156E8" VerticalAlignment="Center" />
+                                                    </Grid>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                            </Grid>
+                        </Grid>
+                    </Grid>
+                            <ScrollViewer x:Name="LicensePanel" Grid.Row="2" IsVisible="False" VerticalScrollBarVisibility="Auto">
+                                <StackPanel Spacing="14" Margin="4">
+                                    <TextBlock Text="라이선스 및 코드 참조" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                    <Border Background="{DynamicResource LicenseSurfaceBrush}" BorderBrush="{DynamicResource LicenseBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="14">
+                                        <StackPanel Spacing="8">
+                                            <TextBlock Text="VODTracker는 MIT 라이선스로 배포됩니다." FontSize="15" FontWeight="Bold" Foreground="{DynamicResource LicenseTitleBrush}" />
+                                            <TextBlock Text="Copyright (c) 2026 VODTracker contributors" FontSize="11" Foreground="#777B8B" />
+                                            <TextBlock Text="Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the &quot;Software&quot;), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE." TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource LicenseBodyBrush}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <TextBlock Text="참고 프로젝트와 제작자 링크를 함께 표시합니다. 패키지별 고지와 라이선스 세부사항은 THIRD-PARTY-LICENSES.md를 확인하세요." TextWrapping="Wrap" FontSize="12" Foreground="#777B8B" />
+                                    <ItemsControl x:Name="LicenseEntries">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="local:LicenseEntry">
+                                                <Border Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{DynamicResource SoftBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="14" Margin="0,0,0,8">
+                                                    <StackPanel Spacing="6">
+                                                        <Grid ColumnDefinitions="*,Auto">
+                                                            <TextBlock Text="{Binding ProjectName}" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                                            <TextBlock Grid.Column="1" Text="{Binding StatusLabel}" FontSize="11" FontWeight="Bold" Foreground="#A46A17" />
+                                                        </Grid>
+                                                        <TextBlock Text="{Binding LicenseLabel}" FontSize="12" Foreground="#684ED8" />
+                                                        <TextBlock Text="{Binding UsageNote}" TextWrapping="Wrap" FontSize="11" Foreground="#777B8B" />
+                                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                                            <Button Content="프로젝트" Tag="{Binding ProjectUrl}" Click="OpenLicenseReference_Click" />
+                                                            <Button Content="{Binding CreatorLinkLabel}" Tag="{Binding CreatorUrl}" Click="OpenLicenseReference_Click" />
+                                                            <Button Content="라이선스" Tag="{Binding LicenseUrl}" IsVisible="{Binding HasLicenseUrl}" Click="OpenLicenseReference_Click" />
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </ScrollViewer>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+
+    <Window.Styles>
+        <Style Selector="Button.nav">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#C4C6D0" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Padding" Value="14,11" />
+            <Setter Property="CornerRadius" Value="9" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="Button.nav:pointerover">
+            <Setter Property="Background" Value="#252836" />
+            <Setter Property="Foreground" Value="White" />
+        </Style>
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="#7156E8" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="18,10" />
+            <Setter Property="CornerRadius" Value="9" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="Button.primary:pointerover">
+            <Setter Property="Background" Value="#6045D4" />
+        </Style>
+    </Window.Styles>
 </Window>
