@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
@@ -17,7 +18,11 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<MediaCard> _allCards = [];
     private readonly ObservableCollection<MediaCard> _visibleCards = [];
     private readonly ObservableCollection<ChannelEntry> _channels = [];
+    private readonly LocalCsvDatabase _localDatabase = new(AppContext.BaseDirectory);
+    private static readonly SemaphoreSlim ThumbnailLoadLimiter = new(4);
     private ChannelEntry? _selectedChannel;
+    private bool _isListView;
+    private bool _showThumbnails = true;
     private readonly DispatcherTimer _channelStatusTimer = new() { Interval = TimeSpan.FromMinutes(2) };
     private bool _isDarkTheme;
 
@@ -25,8 +30,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         CardsList.ItemsSource = _visibleCards;
+        CardsListRows.ItemsSource = _visibleCards;
         ChannelCards.ItemsSource = _channels;
         LicenseEntries.ItemsSource = BuildLicenseEntries();
+        LoadLocalDatabase();
         PlatformTabs.SelectedIndex = 0;
         ApplyTheme(false);
         _channelStatusTimer.Tick += ChannelStatusTimer_Tick;
@@ -35,6 +42,7 @@ public partial class MainWindow : Window
         {
             _channelStatusTimer.Stop();
             foreach (var channel in _channels) channel.Dispose();
+            foreach (var card in _allCards) card.Dispose();
         };
         UpdateCards();
     }
@@ -47,10 +55,28 @@ public partial class MainWindow : Window
         {
             try
             {
-                var id = new Uri(channel.ChannelUrl).AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).Last();
+                var id = channel.ChannelId;
                 var platformKey = channel.Platform == "SOOP" ? "SOOP" : "CHZZK";
                 var profile = await LookupChannelProfileAsync(platformKey, Uri.UnescapeDataString(id));
                 channel.IsLive = profile.IsLive;
+                if (string.IsNullOrWhiteSpace(channel.ProfileImagePath) || !File.Exists(channel.ProfileImagePath))
+                {
+                    var imageUrl = profile.ImageUrl;
+                    if (string.IsNullOrWhiteSpace(imageUrl) && platformKey == "SOOP") imageUrl = BuildSoopProfileImageUrl(id);
+                    channel.ProfileImageUrl = imageUrl;
+                    SaveChannel(channel);
+                    if (!string.IsNullOrWhiteSpace(imageUrl) && !await LoadChannelImageAsync(channel, imageUrl) && platformKey == "SOOP")
+                    {
+                        var fallbackUrl = BuildSoopProfileImageUrl(id);
+                        if (!string.Equals(imageUrl, fallbackUrl, StringComparison.OrdinalIgnoreCase))
+                        {
+                            channel.ProfileImageUrl = fallbackUrl;
+                            SaveChannel(channel);
+                            await LoadChannelImageAsync(channel, fallbackUrl);
+                        }
+                    }
+                }
+                SaveChannel(channel);
             }
             catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
             {
@@ -60,28 +86,81 @@ public partial class MainWindow : Window
         await Task.WhenAll(refreshTasks);
     }
 
-    private static async Task LoadChannelImageAsync(ChannelEntry channel, string? imageUrl)
+    private async Task<bool> LoadChannelImageAsync(ChannelEntry channel, string? imageUrl)
     {
-        if (string.IsNullOrWhiteSpace(imageUrl)) return;
+        if (string.IsNullOrWhiteSpace(imageUrl)) return false;
         var normalizedImageUrl = imageUrl.StartsWith("//", StringComparison.Ordinal) ? $"https:{imageUrl}" : imageUrl;
         if (!Uri.TryCreate(normalizedImageUrl, UriKind.Absolute, out var imageUri) ||
             (imageUri.Scheme != Uri.UriSchemeHttps && imageUri.Scheme != Uri.UriSchemeHttp))
-            return;
+            return false;
 
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            var imageBytes = await client.GetByteArrayAsync(imageUri);
-            using var imageStream = new MemoryStream(imageBytes);
-            channel.SetProfileImage(new Bitmap(imageStream));
+            using var request = new HttpRequestMessage(HttpMethod.Get, imageUri);
+            request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+            request.Headers.Referrer = new Uri(channel.Platform == "SOOP" ? "https://www.sooplive.com/" : "https://chzzk.naver.com/");
+            using var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            var imageBytes = await response.Content.ReadAsByteArrayAsync();
+            var imagePath = _localDatabase.SaveChannelProfileImage(channel.Platform, channel.ChannelId, imageBytes,
+                response.Content.Headers.ContentType?.MediaType);
+            channel.ProfileImageUrl = normalizedImageUrl;
+            channel.SetProfileImage(new Bitmap(imagePath), imagePath);
+            SaveChannel(channel);
+            return true;
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException or ArgumentException)
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
         {
             // Keep the initials placeholder when the profile image cannot be loaded.
+            return false;
         }
     }
 
-    private static async Task LoadChannelAppearanceAsync(ChannelEntry channel, string platformKey, string channelId,
+    private void LoadLocalDatabase()
+    {
+        foreach (var saved in _localDatabase.LoadAll())
+        {
+            var channel = new ChannelEntry(saved.Channel.Platform, saved.Channel.ChannelId, saved.Channel.Name,
+                saved.Channel.Description, saved.Channel.Url);
+            channel.ProfileImageUrl = saved.Channel.ProfileImageUrl;
+            channel.ProfileImagePath = saved.Channel.ProfileImagePath;
+            _channels.Add(channel);
+            if (!string.IsNullOrWhiteSpace(channel.ProfileImagePath) && File.Exists(channel.ProfileImagePath))
+            {
+                try
+                {
+                    channel.SetProfileImage(new Bitmap(channel.ProfileImagePath), channel.ProfileImagePath);
+                }
+                catch (Exception exception) when (exception is IOException or ArgumentException or InvalidOperationException) { }
+            }
+            foreach (var item in saved.Media)
+            {
+                var card = new MediaCard(item.Title, item.Platform, item.SourceType, item.SourceLabel,
+                    item.Availability, item.WatchStatus, item.SourceValue, saved.Channel.Url,
+                    item.PublishedAt, item.ThumbnailUrl, item.ThumbnailPath);
+                _allCards.Add(card);
+                if (!string.IsNullOrWhiteSpace(item.ThumbnailPath) && File.Exists(item.ThumbnailPath))
+                {
+                    try { card.SetThumbnail(new Bitmap(item.ThumbnailPath)); }
+                    catch (Exception exception) when (exception is IOException or ArgumentException or InvalidOperationException) { }
+                }
+                else if (!string.IsNullOrWhiteSpace(item.ThumbnailUrl))
+                {
+                    _ = LoadThumbnailAsync(card, item.ThumbnailUrl);
+                }
+            }
+            SaveChannel(channel);
+            _ = RefreshChannelMetadataAsync(channel);
+        }
+        ChannelEmptyState.IsVisible = _channels.Count == 0;
+        ChannelScroller.IsVisible = _channels.Count > 0;
+    }
+
+    private void SaveChannel(ChannelEntry channel) =>
+        _localDatabase.Save(channel, _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl));
+
+    private async Task LoadChannelAppearanceAsync(ChannelEntry channel, string platformKey, string channelId,
         string? imageUrl, bool profileLookupSucceeded)
     {
         if (!profileLookupSucceeded)
@@ -90,17 +169,68 @@ public partial class MainWindow : Window
             {
                 var profile = await LookupChannelProfileAsync(platformKey, channelId);
                 imageUrl = profile.ImageUrl;
+                if (!string.IsNullOrWhiteSpace(profile.Name)) channel.DisplayName = profile.Name;
+                channel.Description = profile.Description;
                 channel.IsLive = profile.IsLive;
             }
             catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
             {
-                return;
+                if (platformKey != "SOOP") return;
+                imageUrl = BuildSoopProfileImageUrl(channelId);
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(imageUrl))
-            await LoadChannelImageAsync(channel, imageUrl);
+        if (string.IsNullOrWhiteSpace(imageUrl) && platformKey == "SOOP")
+            imageUrl = BuildSoopProfileImageUrl(channelId);
+        channel.ProfileImageUrl = imageUrl;
+        SaveChannel(channel);
+        if (!string.IsNullOrWhiteSpace(imageUrl) && !await LoadChannelImageAsync(channel, imageUrl) && platformKey == "SOOP")
+        {
+            var fallbackUrl = BuildSoopProfileImageUrl(channelId);
+            if (!string.Equals(imageUrl, fallbackUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                channel.ProfileImageUrl = fallbackUrl;
+                SaveChannel(channel);
+                await LoadChannelImageAsync(channel, fallbackUrl);
+            }
+        }
     }
+
+    private async Task RefreshChannelMetadataAsync(ChannelEntry channel)
+    {
+        var platformKey = channel.Platform == "SOOP" ? "SOOP" : "CHZZK";
+        try
+        {
+            var profile = await LookupChannelProfileAsync(platformKey, channel.ChannelId);
+            if (!string.IsNullOrWhiteSpace(profile.Name)) channel.DisplayName = profile.Name;
+            channel.Description = profile.Description;
+            channel.IsLive = profile.IsLive;
+            var imageUrl = profile.ImageUrl;
+            if (string.IsNullOrWhiteSpace(imageUrl) && platformKey == "SOOP") imageUrl = BuildSoopProfileImageUrl(channel.ChannelId);
+            channel.ProfileImageUrl = imageUrl;
+            SaveChannel(channel);
+            if (!string.IsNullOrWhiteSpace(imageUrl) && !await LoadChannelImageAsync(channel, imageUrl) && platformKey == "SOOP")
+            {
+                var fallbackUrl = BuildSoopProfileImageUrl(channel.ChannelId);
+                if (!string.Equals(imageUrl, fallbackUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    channel.ProfileImageUrl = fallbackUrl;
+                    SaveChannel(channel);
+                    await LoadChannelImageAsync(channel, fallbackUrl);
+                }
+            }
+            SaveChannel(channel);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            if (string.IsNullOrWhiteSpace(channel.ProfileImagePath) || !File.Exists(channel.ProfileImagePath))
+                await LoadChannelImageAsync(channel, channel.ProfileImageUrl);
+            // Keep the last saved channel details and cached image when the service cannot be reached.
+        }
+    }
+
+    private static string BuildSoopProfileImageUrl(string channelId) =>
+        $"https://profile.img.sooplive.com/LOGO/{Uri.EscapeDataString(channelId[..2])}/{Uri.EscapeDataString(channelId)}/{Uri.EscapeDataString(channelId)}.jpg";
 
     private void ThemeToggle_Click(object? sender, RoutedEventArgs e) => ApplyTheme(!_isDarkTheme);
 
@@ -149,11 +279,10 @@ public partial class MainWindow : Window
             PlatformTabs.IsVisible = true;
             LibraryPanel.IsVisible = true;
             LicensePanel.IsVisible = false;
-            AddMediaButton.IsVisible = true;
             SearchFiltersPanel.IsVisible = true;
             PageTitle.Text = "전체 보관함";
             PageDescription.Text = "치지직과 SOOP에 등록한 영상을 모아봅니다.";
-            ListTitle.Text = "최근 영상";
+            ListTitle.Text = "다시보기 리스트";
             UpdateCards();
             return;
         }
@@ -164,7 +293,6 @@ public partial class MainWindow : Window
             PlatformTabs.IsVisible = false;
             LibraryPanel.IsVisible = false;
             LicensePanel.IsVisible = true;
-            AddMediaButton.IsVisible = false;
             SearchFiltersPanel.IsVisible = false;
             PageTitle.Text = "라이선스 및 오픈소스 고지";
             PageDescription.Text = "VODTracker의 MIT 라이선스와 사용한 프로젝트 및 패키지의 라이선스를 표시합니다.";
@@ -188,14 +316,13 @@ public partial class MainWindow : Window
         if (PlatformTabs is not null) PlatformTabs.IsVisible = true;
         if (LibraryPanel is not null) LibraryPanel.IsVisible = true;
         if (LicensePanel is not null) LicensePanel.IsVisible = false;
-        if (AddMediaButton is not null) AddMediaButton.IsVisible = true;
         if (SearchFiltersPanel is not null) SearchFiltersPanel.IsVisible = true;
 
         (PageTitle.Text, PageDescription.Text, ListTitle.Text) = section switch
         {
-            "chzzk" => ("치지직", "치지직 채널과 영상을 관리하세요.", "치지직 영상"),
-            "soop" => ("SOOP", "SOOP 채널과 영상을 관리하세요.", "SOOP 영상"),
-            _ => ("전체 보관함", "치지직과 SOOP에 등록한 영상을 모아봅니다.", "최근 영상")
+            "chzzk" => ("치지직", "치지직 채널과 영상을 관리하세요.", "다시보기 리스트"),
+            "soop" => ("SOOP", "SOOP 채널과 영상을 관리하세요.", "다시보기 리스트"),
+            _ => ("전체 보관함", "치지직과 SOOP에 등록한 영상을 모아봅니다.", "다시보기 리스트")
         };
         UpdateCards();
     }
@@ -351,6 +478,88 @@ public partial class MainWindow : Window
         foreach (var card in _allCards) card.IsSelected = ReferenceEquals(card, selectedCard);
     }
 
+    private void GridView_Click(object? sender, RoutedEventArgs e)
+    {
+        _isListView = false;
+        ToolTip.SetTip(GridViewButton, "현재 그리드 보기");
+        ToolTip.SetTip(ListViewButton, "리스트 보기");
+        UpdateCards();
+    }
+
+    private void ListView_Click(object? sender, RoutedEventArgs e)
+    {
+        _isListView = true;
+        ToolTip.SetTip(GridViewButton, "그리드 보기");
+        ToolTip.SetTip(ListViewButton, "현재 리스트 보기");
+        UpdateCards();
+    }
+
+    private void ThumbnailView_Click(object? sender, RoutedEventArgs e)
+    {
+        _showThumbnails = !_showThumbnails;
+        foreach (var card in _allCards) card.ShowThumbnails = _showThumbnails;
+        ThumbnailViewButton.IsEnabled = true;
+        ToolTip.SetTip(ThumbnailViewButton, _showThumbnails ? "썸네일 숨기기" : "썸네일 표시");
+    }
+
+    private void WatchStatus_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: MediaCard card })
+        {
+            card.CycleWatchStatus();
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+                SaveChannel(channel);
+        }
+    }
+
+    private async void MediaSource_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if (sender is not TextBlock { DataContext: MediaCard card }) return;
+        e.Handled = true;
+        foreach (var item in _allCards) item.IsSelected = ReferenceEquals(item, card);
+        if (Uri.TryCreate(card.SourceValue, UriKind.Absolute, out var uri) &&
+            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            await Launcher.LaunchUriAsync(uri);
+            return;
+        }
+
+        if (File.Exists(card.SourceValue))
+            Process.Start(new ProcessStartInfo { FileName = card.SourceValue, UseShellExecute = true });
+    }
+
+    private async Task LoadThumbnailAsync(MediaCard card, string? thumbnailUrl)
+    {
+        if (string.IsNullOrWhiteSpace(thumbnailUrl)) return;
+        var normalizedUrl = thumbnailUrl.StartsWith("//", StringComparison.Ordinal) ? $"https:{thumbnailUrl}" : thumbnailUrl;
+        if (!Uri.TryCreate(normalizedUrl, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)) return;
+
+        await ThumbnailLoadLimiter.WaitAsync();
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            using var response = await client.GetAsync(uri);
+            response.EnsureSuccessStatusCode();
+            var bytes = await response.Content.ReadAsByteArrayAsync();
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } ownerChannel)
+                card.SetThumbnailPath(_localDatabase.SaveThumbnail(ownerChannel.Platform, ownerChannel.ChannelId,
+                    card.Title, card.PublishedAt, normalizedUrl, bytes, response.Content.Headers.ContentType?.MediaType));
+            using var stream = new MemoryStream(bytes);
+            card.SetThumbnail(new Bitmap(stream));
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } owner)
+                SaveChannel(owner);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException or ArgumentException)
+        {
+            // Leave the thumbnail placeholder visible when an image cannot be loaded.
+        }
+        finally
+        {
+            ThumbnailLoadLimiter.Release();
+        }
+    }
+
     private async void RefreshChannelVideos_Click(object? sender, RoutedEventArgs e)
     {
         if (_selectedChannel is null) return;
@@ -364,16 +573,19 @@ public partial class MainWindow : Window
             foreach (var video in foundVideos)
             {
                 if (_allCards.Any(card => string.Equals(card.SourceValue.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))) continue;
-                _allCards.Add(new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
-                    "링크 사용 가능", "안 봄", video.Url, channel.ChannelUrl, video.PublishedAt));
+                var card = new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
+                    "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl);
+                _allCards.Add(card);
+                _ = LoadThumbnailAsync(card, video.ThumbnailUrl);
                 addedCount++;
             }
-            if (button is not null) button.Content = addedCount == 0 ? "새 영상 없음" : $"새 영상 {addedCount}개 추가";
+            SaveChannel(channel);
+            if (button is not null) ToolTip.SetTip(button, addedCount == 0 ? "새 영상이 없습니다" : $"새 영상 {addedCount}개 추가");
             UpdateCards();
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
         {
-            if (button is not null) button.Content = "새로고침 실패";
+            if (button is not null) ToolTip.SetTip(button, "새로고침 실패");
         }
         finally
         {
@@ -381,7 +593,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private static async Task<List<(string Title, string Url, DateTimeOffset? PublishedAt)>> FetchChannelVideosAsync(ChannelEntry channel)
+    private static async Task<List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl)>> FetchChannelVideosAsync(ChannelEntry channel)
     {
         if (!Uri.TryCreate(channel.ChannelUrl, UriKind.Absolute, out var channelUri) ||
             !TryGetPlatformChannelId(channel.Platform == "SOOP" ? "SOOP" : "CHZZK", channelUri, out var channelId))
@@ -389,7 +601,7 @@ public partial class MainWindow : Window
 
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
-        var videos = new List<(string Title, string Url, DateTimeOffset? PublishedAt)>();
+        var videos = new List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl)>();
         if (channel.Platform == "SOOP")
         {
             var url = $"https://chapi.sooplive.com/api/{Uri.EscapeDataString(channelId)}/vods/all/streamer?page=1&per_page=60&orderby=reg_date";
@@ -402,7 +614,8 @@ public partial class MainWindow : Window
                     var title = item.TryGetProperty("title_name", out var titleName) ? titleName.GetString() : null;
                     if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(title)) continue;
                     var dateValue = item.TryGetProperty("reg_date", out var regDate) ? regDate.ToString() : null;
-                    videos.Add((title, $"https://vod.sooplive.com/player/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue)));
+                    var thumbnailUrl = GetFirstString(item, "thumb", "thumbnail", "thumb_url", "thumbnail_url", "title_img", "title_thumbnail");
+                    videos.Add((title, $"https://vod.sooplive.com/player/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl));
                 }
             }
             return videos;
@@ -420,11 +633,20 @@ public partial class MainWindow : Window
                 var title = item.TryGetProperty("videoTitle", out var videoTitle) ? videoTitle.GetString() : null;
                 if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(title)) continue;
                 var dateValue = item.TryGetProperty("publishDate", out var publishDate) ? publishDate.GetString() : null;
-                videos.Add((title, $"https://chzzk.naver.com/video/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue)));
+                var thumbnailUrl = item.TryGetProperty("thumbnailImageUrl", out var thumbnail) ? thumbnail.GetString() : null;
+                videos.Add((title, $"https://chzzk.naver.com/video/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl));
             }
             if (data.GetArrayLength() < 30) break;
         }
         return videos;
+    }
+
+    private static string? GetFirstString(System.Text.Json.JsonElement item, params string[] names)
+    {
+        foreach (var name in names)
+            if (item.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(value.GetString())) return value.GetString();
+        return null;
     }
 
     private static DateTimeOffset? ParsePublishedDate(string? value) =>
@@ -490,6 +712,7 @@ public partial class MainWindow : Window
             var label = isFile ? Path.GetFileName(source) : new Uri(source).Host;
             _allCards.Add(new MediaCard(title!, channel.Platform, isFile ? "PC 파일" : "링크", label,
                 isFile ? "파일 확인 필요" : "링크 사용 가능", "안 봄", source, channel.ChannelUrl, publishedAt));
+            SaveChannel(channel);
             UpdateCards();
             dialog.Close();
         };
@@ -633,8 +856,10 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var channel = new ChannelEntry(platform, name, descriptionInput.Text?.Trim() ?? "", channelUri!.AbsoluteUri, isLive);
+            var channel = new ChannelEntry(platform, channelId!, name, descriptionInput.Text?.Trim() ?? "", channelUri!.AbsoluteUri);
+            channel.IsLive = isLive;
             _channels.Add(channel);
+            SaveChannel(channel);
             ChannelEmptyState.IsVisible = false;
             ChannelScroller.IsVisible = true;
             dialog.Close();
@@ -885,8 +1110,9 @@ public partial class MainWindow : Window
         var query = SearchBox?.Text?.Trim();
         _visibleCards.Clear();
         foreach (var card in _allCards.Where(card =>
+                     _selectedChannel is not null &&
                      (selectedPlatform is null || card.PlatformLabel == selectedPlatform) &&
-                     (_selectedChannel is null || card.ChannelUrl == _selectedChannel.ChannelUrl) &&
+                     card.ChannelUrl == _selectedChannel.ChannelUrl &&
                      (string.IsNullOrWhiteSpace(query) ||
                       card.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                       card.SourceLabel.Contains(query, StringComparison.OrdinalIgnoreCase))))
@@ -895,30 +1121,102 @@ public partial class MainWindow : Window
         }
 
         var hasCards = _visibleCards.Count > 0;
+        foreach (var card in _visibleCards) card.ShowThumbnails = _showThumbnails;
         EmptyState.IsVisible = !hasCards;
-        CardsScroller.IsVisible = hasCards;
-        var channelEmpty = _selectedChannel is not null &&
-                           !_allCards.Any(card => card.ChannelUrl == _selectedChannel.ChannelUrl);
-        ChannelEmptyActions.IsVisible = channelEmpty;
-        EmptyStateAddButton.IsVisible = !channelEmpty;
+        EmptyStateTitle.Text = _selectedChannel is null ? "채널을 추가하거나 선택해주세요" : "아직 등록된 영상이 없습니다";
+        EmptyStateDescription.Text = _selectedChannel is null
+            ? "왼쪽 채널 목록에서 채널을 선택하거나 새 채널을 추가해 주세요."
+            : "위쪽 추가 버튼으로 다시보기를 등록하거나 새로고침을 눌러 불러오세요.";
+        CardsScroller.IsVisible = hasCards && !_isListView;
+        CardsListScroller.IsVisible = hasCards && _isListView;
+        ChannelActionBar.IsVisible = _selectedChannel is not null;
+        ChannelEmptyActions.IsVisible = false;
+        EmptyStateAddButton.IsVisible = false;
         RefreshChannelButton.IsVisible = _selectedChannel is not null;
         DirectAddButton.IsVisible = _selectedChannel is not null;
+        ThumbnailViewButton.IsVisible = _selectedChannel is not null;
+        GridViewButton.IsVisible = _selectedChannel is not null;
+        ListViewButton.IsVisible = _selectedChannel is not null;
     }
 
 }
 
-public sealed record MediaCard(
-    string Title,
-    string PlatformLabel,
-    string SourceTypeLabel,
-    string SourceLabel,
-    string AvailabilityLabel,
-    string WatchStatusLabel,
-    string SourceValue,
-    string? ChannelUrl = null,
-    DateTimeOffset? PublishedAt = null) : System.ComponentModel.INotifyPropertyChanged
+public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, IDisposable
 {
+    private static readonly string[] WatchStatuses = ["\uBBF8\uC2DC\uCCAD", "\uC2DC\uCCAD\uC911", "\uC2DC\uCCAD\uC644\uB8CC"];
+    private static readonly string[] WatchStatusColors = ["#D84040", "#D99B18", "#2E9B57"];
+    private bool _showThumbnails = true;
+    private Bitmap? _thumbnail;
+    private int _watchStatusIndex;
     private bool _isSelected;
+
+    public MediaCard(string title, string platformLabel, string sourceTypeLabel, string sourceLabel,
+        string availabilityLabel, string watchStatusLabel, string sourceValue, string? channelUrl = null,
+        DateTimeOffset? publishedAt = null, string? thumbnailUrl = null, string? thumbnailPath = null)
+    {
+        Title = title;
+        PlatformLabel = platformLabel;
+        SourceTypeLabel = sourceTypeLabel;
+        SourceLabel = sourceLabel;
+        AvailabilityLabel = availabilityLabel;
+        _watchStatusIndex = Array.IndexOf(WatchStatuses, watchStatusLabel);
+        if (_watchStatusIndex < 0) _watchStatusIndex = 0;
+        SourceValue = sourceValue;
+        ChannelUrl = channelUrl;
+        PublishedAt = publishedAt;
+        ThumbnailUrl = thumbnailUrl;
+        ThumbnailPath = thumbnailPath;
+    }
+
+    public string Title { get; }
+    public string PlatformLabel { get; }
+    public string SourceTypeLabel { get; }
+    public string SourceLabel { get; }
+    public string AvailabilityLabel { get; }
+    public string SourceValue { get; }
+    public string? ChannelUrl { get; }
+    public DateTimeOffset? PublishedAt { get; }
+    public string? ThumbnailUrl { get; }
+    public string? ThumbnailPath { get; private set; }
+    public bool ShowThumbnails
+    {
+        get => _showThumbnails;
+        set
+        {
+            if (_showThumbnails == value) return;
+            _showThumbnails = value;
+            OnPropertyChanged(nameof(ShowThumbnails));
+            OnPropertyChanged(nameof(ShowThumbnailPlaceholder));
+            OnPropertyChanged(nameof(CardWidth));
+            OnPropertyChanged(nameof(CardMinHeight));
+        }
+    }
+    public Bitmap? Thumbnail => _thumbnail;
+    public bool HasThumbnail => _thumbnail is not null;
+    public bool ShowThumbnailPlaceholder => ShowThumbnails && _thumbnail is null;
+    public double CardWidth => ShowThumbnails ? 286 : 246;
+    public double CardMinHeight => ShowThumbnails ? 310 : 174;
+    public string WatchStatusLabel => WatchStatuses[_watchStatusIndex];
+    public IBrush WatchStatusBackground => new SolidColorBrush(Color.Parse(WatchStatusColors[_watchStatusIndex]));
+    public IBrush WatchStatusForeground => Brushes.White;
+
+    public void CycleWatchStatus()
+    {
+        _watchStatusIndex = (_watchStatusIndex + 1) % WatchStatuses.Length;
+        OnPropertyChanged(nameof(WatchStatusLabel));
+        OnPropertyChanged(nameof(WatchStatusBackground));
+    }
+
+    public void SetThumbnail(Bitmap bitmap)
+    {
+        _thumbnail?.Dispose();
+        _thumbnail = bitmap;
+        OnPropertyChanged(nameof(Thumbnail));
+        OnPropertyChanged(nameof(HasThumbnail));
+        OnPropertyChanged(nameof(ShowThumbnailPlaceholder));
+    }
+
+    public void SetThumbnailPath(string path) => ThumbnailPath = path;
 
     public bool IsSelected
     {
@@ -927,9 +1225,9 @@ public sealed record MediaCard(
         {
             if (_isSelected == value) return;
             _isSelected = value;
-            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(IsSelected)));
-            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CardBorderBrush)));
-            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CardBorderThickness)));
+            OnPropertyChanged(nameof(IsSelected));
+            OnPropertyChanged(nameof(CardBorderBrush));
+            OnPropertyChanged(nameof(CardBorderThickness));
         }
     }
 
@@ -938,6 +1236,8 @@ public sealed record MediaCard(
         : new SolidColorBrush(Color.Parse("#E5E6ED"));
     public Thickness CardBorderThickness => new(IsSelected ? 2 : 1);
     public string PublishedAtLabel => PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd") ?? "";
+    private void OnPropertyChanged(string propertyName) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
+    public void Dispose() => _thumbnail?.Dispose();
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
 }
 
@@ -946,20 +1246,44 @@ public sealed class ChannelEntry : System.ComponentModel.INotifyPropertyChanged,
     private bool _isLive;
     private bool _isSelected;
     private Bitmap? _profileImage;
+    private string _displayName;
+    private string _description;
 
-    public ChannelEntry(string platform, string displayName, string description, string channelUrl, bool isLive)
+    public ChannelEntry(string platform, string channelId, string displayName, string description, string channelUrl)
     {
         Platform = platform;
-        DisplayName = displayName;
-        Description = description;
+        ChannelId = channelId;
+        _displayName = displayName;
+        _description = description;
         ChannelUrl = channelUrl;
-        _isLive = isLive;
     }
 
     public string Platform { get; }
-    public string DisplayName { get; }
-    public string Description { get; }
+    public string ChannelId { get; }
+    public string DisplayName
+    {
+        get => _displayName;
+        set
+        {
+            if (_displayName == value) return;
+            _displayName = value;
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(DisplayName)));
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Initial)));
+        }
+    }
+    public string Description
+    {
+        get => _description;
+        set
+        {
+            if (_description == value) return;
+            _description = value;
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Description)));
+        }
+    }
     public string ChannelUrl { get; }
+    public string? ProfileImageUrl { get; set; }
+    public string? ProfileImagePath { get; set; }
     public string Initial => string.IsNullOrWhiteSpace(DisplayName) ? "?" : DisplayName[..1];
     public Bitmap? ProfileImage => _profileImage;
     public bool HasProfileImage => _profileImage is not null;
@@ -998,10 +1322,11 @@ public sealed class ChannelEntry : System.ComponentModel.INotifyPropertyChanged,
 
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
 
-    public void SetProfileImage(Bitmap image)
+    public void SetProfileImage(Bitmap image, string? imagePath = null)
     {
         var oldImage = _profileImage;
         _profileImage = image;
+        if (imagePath is not null) ProfileImagePath = imagePath;
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(ProfileImage)));
         PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasProfileImage)));
         oldImage?.Dispose();

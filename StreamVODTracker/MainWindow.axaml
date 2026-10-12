@@ -89,13 +89,12 @@
                             HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                             Click="ThemeToggle_Click"
                             ToolTip.Tip="다크 모드로 전환" />
-                    <Button x:Name="AddMediaButton" Content="＋ 추가" Classes="primary" Click="AddMenu_Click" />
                 </StackPanel>
             </Grid>
 
             <Border Grid.Row="1" Background="{DynamicResource MainSurfaceBrush}" CornerRadius="16" BorderBrush="{DynamicResource MainBorderBrush}" BorderThickness="1" Padding="22">
                 <Grid RowDefinitions="Auto,Auto,*">
-                    <TabControl x:Name="PlatformTabs" SelectionChanged="PlatformTabs_SelectionChanged">
+                    <TabControl x:Name="PlatformTabs" SelectionChanged="PlatformTabs_SelectionChanged" IsVisible="False" Height="0">
                         <TabItem Header="치지직" Tag="chzzk" />
                         <TabItem Header="SOOP" Tag="soop" />
                     </TabControl>
@@ -169,12 +168,53 @@
                             <Grid Grid.Column="1" RowDefinitions="Auto,*">
                             <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,12">
                                 <StackPanel Spacing="3">
-                                    <TextBlock x:Name="ListTitle" Text="치지직 영상" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                    <TextBlock x:Name="ListTitle" Text="다시보기 리스트" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" />
                                     <TextBlock Text="플랫폼별 등록 영상을 카드로 모아 보여줍니다." FontSize="11" Foreground="#898D9B" />
                                 </StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                                    <Button x:Name="RefreshChannelButton" Content="새로고침" Click="RefreshChannelVideos_Click" IsVisible="False" />
-                                    <Button x:Name="DirectAddButton" Content="직접추가" Click="DirectAddChannelVideo_Click" IsVisible="False" />
+                                <StackPanel x:Name="ChannelActionBar" Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" IsVisible="False">
+                                    <Button x:Name="ThumbnailViewButton" Width="42" Height="42" Padding="0" Classes="primary"
+                                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                            Click="ThumbnailView_Click" IsVisible="False" ToolTip.Tip="썸네일 표시 전환">
+                                        <Border Width="26" Height="21" BorderBrush="White" BorderThickness="1.5" CornerRadius="2">
+                                            <Grid>
+                                                <Ellipse Width="5" Height="5" Fill="White" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,3,0" />
+                                                <Polyline Points="2,17 8,10 12,14 16,9 23,17" Stroke="White" StrokeThickness="1.8" />
+                                            </Grid>
+                                        </Border>
+                                    </Button>
+                                    <Button x:Name="GridViewButton" Width="42" Height="42" Padding="0" Classes="primary"
+                                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                            Click="GridView_Click" IsVisible="False" ToolTip.Tip="그리드 보기">
+                                        <Grid Width="25" Height="25" ColumnDefinitions="7,7,7" RowDefinitions="7,7,7" ColumnSpacing="2" RowSpacing="2">
+                                            <Border Background="White" CornerRadius="1" />
+                                            <Border Grid.Column="1" Background="White" CornerRadius="1" />
+                                            <Border Grid.Column="2" Background="White" CornerRadius="1" />
+                                            <Border Grid.Row="1" Background="White" CornerRadius="1" />
+                                            <Border Grid.Row="1" Grid.Column="1" Background="White" CornerRadius="1" />
+                                            <Border Grid.Row="1" Grid.Column="2" Background="White" CornerRadius="1" />
+                                            <Border Grid.Row="2" Background="White" CornerRadius="1" />
+                                            <Border Grid.Row="2" Grid.Column="1" Background="White" CornerRadius="1" />
+                                            <Border Grid.Row="2" Grid.Column="2" Background="White" CornerRadius="1" />
+                                        </Grid>
+                                    </Button>
+                                    <Button x:Name="ListViewButton" Width="42" Height="42" Padding="0" Classes="primary"
+                                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                            Click="ListView_Click" IsVisible="False" ToolTip.Tip="리스트 보기">
+                                        <Grid Width="26" Height="24" ColumnDefinitions="7,16" RowDefinitions="6,6,6" ColumnSpacing="3" RowSpacing="3">
+                                            <Border Background="White" CornerRadius="1" />
+                                            <Border Grid.Column="1" Height="2" Background="White" CornerRadius="1" VerticalAlignment="Center" />
+                                            <Border Grid.Row="1" Background="White" CornerRadius="1" />
+                                            <Border Grid.Row="1" Grid.Column="1" Height="2" Background="White" CornerRadius="1" VerticalAlignment="Center" />
+                                            <Border Grid.Row="2" Background="White" CornerRadius="1" />
+                                            <Border Grid.Row="2" Grid.Column="1" Height="2" Background="White" CornerRadius="1" VerticalAlignment="Center" />
+                                        </Grid>
+                                    </Button>
+                                    <Button x:Name="DirectAddButton" Content="＋ 추가" MinWidth="82" Height="42" Padding="14,8" Classes="primary" Click="DirectAddChannelVideo_Click" IsVisible="False" ToolTip.Tip="다시보기 직접 추가" />
+                                    <Button x:Name="RefreshChannelButton" Width="42" Height="42" Padding="0" Classes="primary"
+                                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                            Click="RefreshChannelVideos_Click" IsVisible="False" ToolTip.Tip="새로고침">
+                                        <TextBlock Text="⟳" FontSize="25" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center" Margin="0,-3,0,0" />
+                                    </Button>
                                 </StackPanel>
                             </Grid>
                             <Grid Grid.Row="1">
@@ -183,9 +223,9 @@
                                     <Border Width="56" Height="56" CornerRadius="18" Background="#F0EDFF" HorizontalAlignment="Center">
                                         <TextBlock Text="▤" FontSize="25" Foreground="#7C5CFC" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
-                                            <TextBlock Text="아직 등록된 영상이 없습니다" FontSize="17" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
+                                            <TextBlock x:Name="EmptyStateTitle" Text="채널을 추가하거나 선택해주세요" FontSize="17" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
                                                HorizontalAlignment="Center" />
-                                    <TextBlock Text="온라인 링크 또는 PC에 있는 영상 파일을 추가해 보세요.\n두 가지 방식 모두 치지직과 SOOP 탭에서 사용할 수 있습니다."
+                                    <TextBlock x:Name="EmptyStateDescription" Text="왼쪽 채널 목록에서 채널을 선택하거나 새 채널을 추가해 주세요."
                                                FontSize="12" Foreground="#85899B" TextAlignment="Center" TextWrapping="Wrap" HorizontalAlignment="Center" />
                                     <Button x:Name="EmptyStateAddButton" Content="＋  영상 추가하기" Classes="primary" Margin="0,6,0,0" Click="AddMenu_Click" />
                                     <StackPanel x:Name="ChannelEmptyActions" Orientation="Horizontal" Spacing="10" IsVisible="False" HorizontalAlignment="Center">
@@ -203,30 +243,67 @@
                                     </ItemsControl.ItemsPanel>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate x:DataType="local:MediaCard">
-                                            <Border Width="286" MinHeight="174" Margin="0,16,16,0" Padding="17"
+                                            <Border Width="{Binding CardWidth}" MinHeight="{Binding CardMinHeight}" Margin="0,16,16,0" Padding="15"
                                                     Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
                                                     PointerPressed="MediaCard_PointerPressed">
-                                                <Grid RowDefinitions="Auto,*,Auto">
-                                                    <Grid ColumnDefinitions="*,Auto">
-                                                        <Border Background="#F0EDFF" CornerRadius="6" Padding="8,4" HorizontalAlignment="Left">
-                                                            <TextBlock Text="{Binding PlatformLabel}" Foreground="#684ED8" FontSize="10" FontWeight="Bold" />
-                                                        </Border>
-                                                        <TextBlock Grid.Column="1" Text="{Binding SourceTypeLabel}" Foreground="#8A8D9A" FontSize="10" VerticalAlignment="Center" />
-                                                    </Grid>
-                                                    <StackPanel Grid.Row="1" Spacing="7" Margin="0,17,0,14">
-                                                        <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
-                                                                   TextTrimming="CharacterEllipsis" MaxLines="2" />
-                                                        <TextBlock Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B"
-                                                                   TextTrimming="CharacterEllipsis" />
-                                                    </StackPanel>
-                                                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
-                                                        <TextBlock Text="{Binding AvailabilityLabel}" FontSize="11" Foreground="#8A8D9A" VerticalAlignment="Center" />
-                                                        <TextBlock Grid.Column="1" Text="{Binding PublishedAtLabel}" FontSize="10" Foreground="#8A8D9A" VerticalAlignment="Center" />
-                                                        <TextBlock Grid.Column="2" Text="{Binding WatchStatusLabel}" FontSize="11" Foreground="#7156E8" VerticalAlignment="Center" />
+                                                <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="9">
+                                                    <Border Height="142" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
+                                                            IsVisible="{Binding ShowThumbnails}">
+                                                        <Grid>
+                                                            <TextBlock Text="?" FontSize="30" Foreground="{DynamicResource SecondaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                       IsVisible="{Binding ShowThumbnailPlaceholder}" />
+                                                            <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" IsVisible="{Binding HasThumbnail}" />
+                                                        </Grid>
+                                                    </Border>
+                                                    <TextBlock Grid.Row="1" Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
+                                                               TextTrimming="CharacterEllipsis" MaxLines="2" />
+                                                    <TextBlock Grid.Row="2" Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
+                                                               TextDecorations="Underline" Cursor="Hand" VerticalAlignment="Top" PointerPressed="MediaSource_PointerPressed" />
+                                                    <Grid Grid.Row="3" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                        <TextBlock Text="{Binding PublishedAtLabel}" FontSize="14" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                                                        <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
+                                                                BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
+                                                                Click="WatchStatus_Click" />
                                                     </Grid>
                                                 </Grid>
                                             </Border>
                                         </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                            <ScrollViewer x:Name="CardsListScroller" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
+                                <ItemsControl x:Name="CardsListRows">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="local:MediaCard">
+                                        <Border HorizontalAlignment="Stretch" MinHeight="122" Margin="0,10,0,0" Padding="14"
+                                                Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
+                                                PointerPressed="MediaCard_PointerPressed">
+                                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                                <Border Grid.Column="0" Width="160" Height="94" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
+                                                        IsVisible="{Binding ShowThumbnails}">
+                                                    <Grid>
+                                                        <TextBlock Text="?" FontSize="26" Foreground="{DynamicResource SecondaryTextBrush}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                   IsVisible="{Binding ShowThumbnailPlaceholder}" />
+                                                        <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" IsVisible="{Binding HasThumbnail}" />
+                                                    </Grid>
+                                                </Border>
+                                                <Grid Grid.Column="1" RowDefinitions="*,Auto" RowSpacing="7">
+                                                    <StackPanel Spacing="6" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
+                                                                   TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                        <TextBlock Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
+                                                                   TextDecorations="Underline" Cursor="Hand" PointerPressed="MediaSource_PointerPressed" />
+                                                    </StackPanel>
+                                                    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                        <TextBlock Text="{Binding PublishedAtLabel}" FontSize="14" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                                                        <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
+                                                                BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
+                                                                Click="WatchStatus_Click" />
+                                                    </Grid>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
                             </ScrollViewer>
