@@ -25,6 +25,22 @@
         <SolidColorBrush x:Key="ThemeButtonBackgroundBrush" Color="#FFFFFF" />
         <SolidColorBrush x:Key="ThemeButtonForegroundBrush" Color="#252836" />
     </Window.Resources>
+    <Window.Styles>
+        <Style Selector="ScrollBar:vertical">
+            <Setter Property="Width" Value="14" />
+            <Setter Property="MinWidth" Value="14" />
+        </Style>
+        <Style Selector="ScrollBar:horizontal">
+            <Setter Property="Height" Value="14" />
+            <Setter Property="MinHeight" Value="14" />
+        </Style>
+        <Style Selector="ScrollBar:vertical /template/ Thumb">
+            <Setter Property="MinHeight" Value="48" />
+        </Style>
+        <Style Selector="ScrollBar:horizontal /template/ Thumb">
+            <Setter Property="MinWidth" Value="48" />
+        </Style>
+    </Window.Styles>
     <Grid ColumnDefinitions="240,*">
         <Border Grid.Column="0" Background="{DynamicResource SidebarBackgroundBrush}" Padding="20,24">
             <Grid RowDefinitions="Auto,Auto,*,Auto">
@@ -81,6 +97,9 @@
                     <TextBlock x:Name="PageDescription" Text="치지직 채널과 영상을 관리하세요." FontSize="13" Foreground="{DynamicResource SecondaryTextBrush}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                    <Button Content="CSV 가져오기" Height="40" Click="ImportCsv_Click" />
+                    <Button Content="CSV 내보내기" Height="40" Click="ExportCsv_Click" />
+                    <Button Content="Excel 내보내기" Height="40" Click="ExportXlsx_Click" />
                     <Button x:Name="ThemeToggleButton" Content="☀" Width="40" Height="40" Padding="0"
                             Background="{DynamicResource ThemeButtonBackgroundBrush}"
                             Foreground="{DynamicResource ThemeButtonForegroundBrush}"
@@ -100,17 +119,17 @@
                     </TabControl>
 
                     <Grid Grid.Row="1" x:Name="SearchFiltersPanel" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10" Margin="0,18,0,18">
-                        <TextBox x:Name="SearchBox" PlaceholderText="제목 또는 채널 검색" MinHeight="38" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" />
-                        <ComboBox Grid.Column="1" x:Name="StatusFilter" SelectedIndex="0" MinWidth="128" VerticalContentAlignment="Center">
+                        <TextBox x:Name="SearchBox" PlaceholderText="영상 제목 혹은 날짜 검색" MinHeight="38" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" />
+                        <ComboBox Grid.Column="1" x:Name="StatusFilter" SelectedIndex="0" MinWidth="128" VerticalContentAlignment="Center" SelectionChanged="StatusFilter_SelectionChanged">
                             <ComboBoxItem Content="모든 시청 상태" />
-                            <ComboBoxItem Content="안 봄" />
-                            <ComboBoxItem Content="보는 중" />
-                            <ComboBoxItem Content="다 봄" />
+                            <ComboBoxItem Content="미시청" />
+                            <ComboBoxItem Content="시청중" />
+                            <ComboBoxItem Content="시청완료" />
                         </ComboBox>
-                        <ComboBox Grid.Column="2" x:Name="SortOrder" SelectedIndex="0" MinWidth="128" VerticalContentAlignment="Center">
+                        <ComboBox Grid.Column="2" x:Name="SortOrder" SelectedIndex="0" MinWidth="128" VerticalContentAlignment="Center" SelectionChanged="SortOrder_SelectionChanged">
+                            <ComboBoxItem Content="게시일순" />
                             <ComboBoxItem Content="최근 추가순" />
                             <ComboBoxItem Content="제목순" />
-                            <ComboBoxItem Content="게시일순" />
                         </ComboBox>
                     </Grid>
 
@@ -250,7 +269,7 @@
                                             <Border Width="{Binding CardWidth}" MinHeight="{Binding CardMinHeight}" Margin="0,16,16,0" Padding="15"
                                                     Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
                                                     Tag="grid" Loaded="MediaCard_Loaded" Unloaded="MediaCard_Unloaded" PointerPressed="MediaCard_PointerPressed">
-                                                <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="9">
+                                                <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" RowSpacing="9">
                                                     <Border Height="142" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
                                                             IsVisible="{Binding ShowThumbnails}">
                                                         <Grid>
@@ -263,7 +282,10 @@
                                                                TextTrimming="CharacterEllipsis" MaxLines="2" />
                                                     <TextBlock Grid.Row="2" Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
                                                                TextDecorations="Underline" Cursor="Hand" VerticalAlignment="Top" PointerPressed="MediaSource_PointerPressed" />
-                                                    <Grid Grid.Row="3" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                    <TextBlock Grid.Row="3" Text="{Binding LocalFilePathLabel}" IsVisible="{Binding HasLocalFilePath}"
+                                                               FontSize="11" Foreground="#7156E8" TextTrimming="CharacterEllipsis" TextDecorations="Underline"
+                                                               Cursor="Hand" ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed" />
+                                                    <Grid Grid.Row="4" ColumnDefinitions="*,Auto" ColumnSpacing="8">
                                                         <TextBlock Text="{Binding PublishedAtLabel}" FontSize="14" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" />
                                                         <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
                                                                 BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
@@ -297,6 +319,9 @@
                                                                    TextTrimming="CharacterEllipsis" MaxLines="1" />
                                                         <TextBlock Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
                                                                    TextDecorations="Underline" Cursor="Hand" PointerPressed="MediaSource_PointerPressed" />
+                                                        <TextBlock Text="{Binding LocalFilePathLabel}" IsVisible="{Binding HasLocalFilePath}"
+                                                                   FontSize="11" Foreground="#7156E8" TextTrimming="CharacterEllipsis" TextDecorations="Underline"
+                                                                   Cursor="Hand" ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed" />
                                                     </StackPanel>
                                                     <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
                                                         <TextBlock Text="{Binding PublishedAtLabel}" FontSize="14" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" />

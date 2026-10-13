@@ -12,32 +12,41 @@ public sealed class AppSettingsStore
         Directory.CreateDirectory(settingsDirectory);
         _settingsPath = Path.Combine(settingsDirectory, "settings.ini");
         if (!File.Exists(_settingsPath))
-            File.WriteAllText(_settingsPath, "[Appearance]\nTheme=Light\n", new UTF8Encoding(false));
+            File.WriteAllText(_settingsPath, "[Appearance]\nTheme=Light\n\n[Library]\nSortOrder=PublishedAt\n", new UTF8Encoding(false));
     }
 
     public bool LoadIsDarkTheme()
     {
-        var inAppearanceSection = false;
+        return string.Equals(LoadValue("Appearance", "Theme"), "Dark", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public string LoadSortOrder() => LoadValue("Library", "SortOrder") ?? "PublishedAt";
+
+    public void SaveSortOrder(string sortOrder) => SaveValue("Library", "SortOrder", sortOrder);
+
+    public void SaveIsDarkTheme(bool isDark) => SaveValue("Appearance", "Theme", isDark ? "Dark" : "Light");
+
+    private string? LoadValue(string sectionName, string key)
+    {
+        var inSection = false;
         foreach (var rawLine in File.ReadLines(_settingsPath, Encoding.UTF8))
         {
             var line = rawLine.Trim();
             if (line.Length == 0 || line.StartsWith(';') || line.StartsWith('#')) continue;
             if (line.StartsWith('[') && line.EndsWith(']'))
             {
-                inAppearanceSection = line.Equals("[Appearance]", StringComparison.OrdinalIgnoreCase);
+                inSection = line.Equals($"[{sectionName}]", StringComparison.OrdinalIgnoreCase);
                 continue;
             }
-
-            if (!inAppearanceSection) continue;
+            if (!inSection) continue;
             var separator = line.IndexOf('=');
-            if (separator < 0 || !line[..separator].Trim().Equals("Theme", StringComparison.OrdinalIgnoreCase)) continue;
-            return line[(separator + 1)..].Trim().Equals("Dark", StringComparison.OrdinalIgnoreCase);
+            if (separator >= 0 && line[..separator].Trim().Equals(key, StringComparison.OrdinalIgnoreCase))
+                return line[(separator + 1)..].Trim();
         }
-
-        return false;
+        return null;
     }
 
-    public void SaveIsDarkTheme(bool isDark)
+    private void SaveValue(string sectionName, string key, string value)
     {
         var lines = File.ReadAllLines(_settingsPath, Encoding.UTF8).ToList();
         var sectionStart = -1;
@@ -51,30 +60,31 @@ public sealed class AppSettingsStore
                 sectionEnd = index;
                 break;
             }
-            if (line.Equals("[Appearance]", StringComparison.OrdinalIgnoreCase))
+            if (line.Equals($"[{sectionName}]", StringComparison.OrdinalIgnoreCase))
                 sectionStart = index;
         }
 
-        var themeLine = $"Theme={(isDark ? "Dark" : "Light")}";
+        var settingLine = $"{key}={value}";
         if (sectionStart < 0)
         {
             if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1])) lines.Add("");
-            lines.Add("[Appearance]");
-            lines.Add(themeLine);
+            lines.Add($"[{sectionName}]");
+            lines.Add(settingLine);
         }
         else
         {
-            var themeIndex = -1;
+            var settingIndex = -1;
             for (var index = sectionStart + 1; index < sectionEnd; index++)
             {
-                if (lines[index].Trim().StartsWith("Theme=", StringComparison.OrdinalIgnoreCase))
+                var separator = lines[index].IndexOf('=');
+                if (separator >= 0 && lines[index][..separator].Trim().Equals(key, StringComparison.OrdinalIgnoreCase))
                 {
-                    themeIndex = index;
+                    settingIndex = index;
                     break;
                 }
             }
-            if (themeIndex >= 0) lines[themeIndex] = themeLine;
-            else lines.Insert(sectionEnd, themeLine);
+            if (settingIndex >= 0) lines[settingIndex] = settingLine;
+            else lines.Insert(sectionEnd, settingLine);
         }
 
         File.WriteAllLines(_settingsPath, lines, new UTF8Encoding(false));

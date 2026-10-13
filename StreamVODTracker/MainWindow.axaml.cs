@@ -24,17 +24,28 @@ public partial class MainWindow : Window
     private readonly AppSettingsStore _settingsStore = new(AppContext.BaseDirectory);
     private readonly List<Border> _cardVisuals = [];
     private readonly HashSet<MediaCard> _dragSelectionBase = [];
-    private readonly LocalCsvDatabase _localDatabase = new(AppContext.BaseDirectory);
+    private readonly LocalCsvDatabase _localDatabase;
+    private readonly IVodRepository _vodRepository;
     private static readonly SemaphoreSlim ThumbnailLoadLimiter = new(4);
     private ChannelEntry? _selectedChannel;
     private bool _isListView;
     private bool _showThumbnails = true;
     private readonly DispatcherTimer _channelStatusTimer = new() { Interval = TimeSpan.FromMinutes(2) };
     private bool _isDarkTheme;
+    private bool _isLoadingSettings = true;
 
     public MainWindow()
     {
         InitializeComponent();
+        SortOrder.SelectedIndex = _settingsStore.LoadSortOrder() switch
+        {
+            "RecentAdded" => 1,
+            "Title" => 2,
+            _ => 0
+        };
+        _isLoadingSettings = false;
+        _localDatabase = new LocalCsvDatabase(AppContext.BaseDirectory);
+        _vodRepository = _localDatabase;
         AddHandler(InputElement.PointerPressedEvent, Window_PointerPressed, Avalonia.Interactivity.RoutingStrategies.Bubble);
         AddHandler(InputElement.PointerMovedEvent, Window_PointerMoved, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
         AddHandler(InputElement.PointerReleasedEvent, Window_PointerReleased, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
@@ -130,7 +141,7 @@ public partial class MainWindow : Window
 
     private void LoadLocalDatabase()
     {
-        foreach (var saved in _localDatabase.LoadAll())
+        foreach (var saved in _vodRepository.LoadAll())
         {
             var channel = new ChannelEntry(saved.Channel.Platform, saved.Channel.ChannelId, saved.Channel.Name,
                 saved.Channel.Description, saved.Channel.Url);
@@ -149,7 +160,8 @@ public partial class MainWindow : Window
             {
                 var card = new MediaCard(item.Title, item.Platform, item.SourceType, item.SourceLabel,
                     item.Availability, item.WatchStatus, item.SourceValue, saved.Channel.Url,
-                    item.PublishedAt, item.ThumbnailUrl, item.ThumbnailPath);
+                    item.PublishedAt, item.ThumbnailUrl, item.ThumbnailPath, item.OnlineUrl, item.LocalFilePath,
+                    item.VodId, item.LastPositionSeconds, item.Memo, item.UpdatedAt);
                 _allCards.Add(card);
                 if (!string.IsNullOrWhiteSpace(item.ThumbnailPath) && File.Exists(item.ThumbnailPath))
                 {
@@ -169,7 +181,7 @@ public partial class MainWindow : Window
     }
 
     private void SaveChannel(ChannelEntry channel) =>
-        _localDatabase.Save(channel, _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl));
+        _vodRepository.Save(channel, _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl));
 
     private async Task LoadChannelAppearanceAsync(ChannelEntry channel, string platformKey, string channelId,
         string? imageUrl, bool profileLookupSucceeded)
@@ -528,7 +540,7 @@ public partial class MainWindow : Window
     {
         if (!e.GetCurrentPoint(CardsArea).Properties.IsLeftButtonPressed ||
             e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Shift) ||
-            e.Source is Button || e.Source is TextBlock { Cursor: not null }) return;
+            IsInsideScrollBar(e.Source) || e.Source is Button || e.Source is TextBlock { Cursor: not null }) return;
 
         var pressedCard = (e.Source as Control)?.DataContext as MediaCard;
         if (pressedCard is null)
@@ -541,6 +553,13 @@ public partial class MainWindow : Window
         _isLassoSelecting = true;
         UpdateLasso(e.GetPosition(CardsArea));
         e.Pointer.Capture(this);
+    }
+
+    private static bool IsInsideScrollBar(object? source)
+    {
+        for (var visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
+            if (visual is ScrollBar) return true;
+        return false;
     }
 
     private void Window_PointerPressed(object? sender, PointerPressedEventArgs e)
@@ -710,9 +729,104 @@ public partial class MainWindow : Window
         UpdateCards();
     }
 
-    private void EditSelected_Click(object? sender, RoutedEventArgs e)
+    private async void EditSelected_Click(object? sender, RoutedEventArgs e)
     {
-        // The edit action is enabled for a single selection; the edit form is handled in the next editing step.
+        var card = _allCards.SingleOrDefault(item => item.IsSelected && _visibleCards.Contains(item));
+        if (card is null) return;
+
+        var titleInput = new TextBox { Text = card.Title, PlaceholderText = "영상 제목", MinHeight = 38 };
+        var urlInput = new TextBox { Text = card.OnlineUrl ?? "", PlaceholderText = "온라인 영상 URL (선택)", MinHeight = 38 };
+        var filePathInput = new TextBox { Text = card.LocalFilePath ?? "", PlaceholderText = "파일 링크/경로 (선택)", MinHeight = 38 };
+        var dateInput = new TextBox
+        {
+            Text = card.PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) ?? "",
+            PlaceholderText = "방송 날짜 (선택, YYYY-MM-DD)",
+            MinHeight = 38
+        };
+        var error = new TextBlock { Foreground = Brushes.IndianRed, FontSize = 12, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+        var dialog = new Window
+        {
+            Title = "영상 수정",
+            Width = 520,
+            Height = 390,
+            MinWidth = 520,
+            MinHeight = 390,
+            MaxWidth = 520,
+            MaxHeight = 390,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        var chooseFile = new Button { Content = "추가", MinWidth = 66 };
+        chooseFile.Click += async (_, _) =>
+        {
+            var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "영상 파일 선택",
+                AllowMultiple = false,
+                FileTypeFilter = [new FilePickerFileType("영상 파일") { Patterns = ["*.mp4", "*.mkv", "*.avi", "*.mov", "*.wmv", "*.webm", "*.m4v"] }, FilePickerFileTypes.All]
+            });
+            if (files.Count == 0) return;
+            filePathInput.Text = files[0].Path.LocalPath;
+            if (string.IsNullOrWhiteSpace(titleInput.Text)) titleInput.Text = Path.GetFileNameWithoutExtension(files[0].Name);
+        };
+        var cancel = new Button { Content = "취소", MinWidth = 82, IsCancel = true };
+        var save = new Button { Content = "저장", MinWidth = 82, Classes = { "primary" }, IsDefault = true };
+        cancel.Click += (_, _) => dialog.Close();
+        save.Click += (_, _) =>
+        {
+            var title = titleInput.Text?.Trim();
+            var address = urlInput.Text?.Trim();
+            var filePath = filePathInput.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(title)) { error.Text = "영상 제목을 입력해 주세요."; return; }
+            if (!string.IsNullOrWhiteSpace(address) && !IsHttpUrl(address))
+            { error.Text = "URL은 HTTP 또는 HTTPS 주소로 입력해 주세요."; return; }
+            if (string.IsNullOrWhiteSpace(address) && string.IsNullOrWhiteSpace(filePath))
+            { error.Text = "영상 URL 또는 파일 경로를 하나 이상 입력해 주세요."; return; }
+
+            DateTimeOffset? publishedAt = null;
+            if (!string.IsNullOrWhiteSpace(dateInput.Text))
+            {
+                if (!DateTime.TryParseExact(dateInput.Text.Trim(), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None, out var parsedDate))
+                { error.Text = "날짜를 YYYY-MM-DD 형식으로 입력해 주세요."; return; }
+                publishedAt = new DateTimeOffset(parsedDate, TimeZoneInfo.Local.GetUtcOffset(parsedDate));
+            }
+
+            card.UpdateDetails(title, publishedAt, address, filePath);
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(item => item.ChannelUrl == card.ChannelUrl) is { } channel)
+                SaveChannel(channel);
+            UpdateCards();
+            dialog.Close();
+        };
+
+        dialog.Content = new StackPanel
+        {
+            Margin = new Thickness(24),
+            Spacing = 12,
+            Children =
+            {
+                new TextBlock { Text = "영상 정보 수정", FontSize = 20, FontWeight = Avalonia.Media.FontWeight.Bold },
+                titleInput,
+                urlInput,
+                new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                    ColumnSpacing = 8,
+                    Children = { filePathInput, chooseFile }
+                },
+                dateInput,
+                error,
+                new StackPanel
+                {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                    Spacing = 8,
+                    Children = { cancel, save }
+                }
+            }
+        };
+        Grid.SetColumn(chooseFile, 1);
+        await dialog.ShowDialog(this);
     }
 
     private void GridView_Click(object? sender, RoutedEventArgs e)
@@ -754,15 +868,26 @@ public partial class MainWindow : Window
         if (sender is not TextBlock { DataContext: MediaCard card }) return;
         e.Handled = true;
         foreach (var item in _allCards) item.IsSelected = ReferenceEquals(item, card);
-        if (Uri.TryCreate(card.SourceValue, UriKind.Absolute, out var uri) &&
-            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        if (IsHttpUrl(card.OnlineUrl) && Uri.TryCreate(card.OnlineUrl, UriKind.Absolute, out var uri))
         {
             await Launcher.LaunchUriAsync(uri);
             return;
         }
 
-        if (File.Exists(card.SourceValue))
-            Process.Start(new ProcessStartInfo { FileName = card.SourceValue, UseShellExecute = true });
+        OpenLocalFile(card.LocalFilePath);
+    }
+
+    private void MediaFile_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if (sender is not TextBlock { DataContext: MediaCard card }) return;
+        e.Handled = true;
+        OpenLocalFile(card.LocalFilePath);
+    }
+
+    private static void OpenLocalFile(string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
     }
 
     private async Task LoadThumbnailAsync(MediaCard card, string? thumbnailUrl)
@@ -890,6 +1015,9 @@ public partial class MainWindow : Window
         DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture,
             System.Globalization.DateTimeStyles.AssumeLocal, out var date) ? date : null;
 
+    private static bool IsHttpUrl(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
     private async void DirectAddChannelVideo_Click(object? sender, RoutedEventArgs e)
     {
         if (_selectedChannel is { } channel) await AddChannelVideoAsync(channel);
@@ -898,7 +1026,8 @@ public partial class MainWindow : Window
     private async Task AddChannelVideoAsync(ChannelEntry channel)
     {
         var titleInput = new TextBox { PlaceholderText = "영상 제목", MinHeight = 38 };
-        var urlInput = new TextBox { PlaceholderText = "영상 링크 (파일을 고르면 비워 둬도 됩니다)", MinHeight = 38 };
+        var urlInput = new TextBox { PlaceholderText = "영상 링크 (선택)", MinHeight = 38 };
+        var filePathInput = new TextBox { PlaceholderText = "파일 링크/경로 (선택)", MinHeight = 38 };
         var dateInput = new TextBox { PlaceholderText = "방송 날짜 (선택, 예: 2026-10-13)", MinHeight = 38 };
         var calendarButton = new Button
         {
@@ -976,8 +1105,6 @@ public partial class MainWindow : Window
                 calendarPopup.IsOpen = false;
             }
         };
-        var fileLabel = new TextBlock { Text = "선택된 파일 없음", FontSize = 12, Foreground = Brushes.Gray, TextTrimming = Avalonia.Media.TextTrimming.CharacterEllipsis };
-        string? selectedPath = null;
         var error = new TextBlock { Foreground = Brushes.IndianRed, FontSize = 12, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
         var dialog = new Window
         {
@@ -986,7 +1113,7 @@ public partial class MainWindow : Window
         };
         var cancel = new Button { Content = "취소", MinWidth = 82, IsCancel = true };
         var save = new Button { Content = "추가", MinWidth = 82, IsDefault = true };
-        var chooseFile = new Button { Content = "파일 선택" };
+        var chooseFile = new Button { Content = "추가" };
         chooseFile.Click += async (_, _) =>
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -995,8 +1122,7 @@ public partial class MainWindow : Window
                 FileTypeFilter = [new FilePickerFileType("영상 파일") { Patterns = ["*.mp4", "*.mkv", "*.avi", "*.mov", "*.wmv", "*.webm", "*.m4v"] }, FilePickerFileTypes.All]
             });
             if (files.Count == 0) return;
-            selectedPath = files[0].Path.LocalPath;
-            fileLabel.Text = files[0].Name;
+            filePathInput.Text = files[0].Path.LocalPath;
             if (string.IsNullOrWhiteSpace(titleInput.Text)) titleInput.Text = Path.GetFileNameWithoutExtension(files[0].Name);
         };
         cancel.Click += (_, _) => dialog.Close();
@@ -1004,6 +1130,7 @@ public partial class MainWindow : Window
         {
             var title = titleInput.Text?.Trim();
             var address = urlInput.Text?.Trim();
+            var filePath = filePathInput.Text?.Trim();
             DateTimeOffset? publishedAt = null;
             if (!string.IsNullOrWhiteSpace(dateInput.Text))
             {
@@ -1016,15 +1143,19 @@ public partial class MainWindow : Window
                 publishedAt = new DateTimeOffset(parsedDate, TimeZoneInfo.Local.GetUtcOffset(parsedDate));
             }
             if (string.IsNullOrWhiteSpace(title)) { error.Text = "영상 제목을 입력해 주세요."; return; }
-            if (selectedPath is null && (!Uri.TryCreate(address, UriKind.Absolute, out var mediaUri) ||
-                                         (mediaUri.Scheme != Uri.UriSchemeHttp && mediaUri.Scheme != Uri.UriSchemeHttps)))
-            { error.Text = "HTTP/HTTPS 영상 링크를 입력하거나 파일을 선택해 주세요."; return; }
+            if (!string.IsNullOrWhiteSpace(address) && !IsHttpUrl(address))
+            { error.Text = "URL은 HTTP 또는 HTTPS 주소로 입력해 주세요."; return; }
+            if (string.IsNullOrWhiteSpace(address) && string.IsNullOrWhiteSpace(filePath))
+            { error.Text = "영상 URL 또는 파일 경로를 하나 이상 입력해 주세요."; return; }
 
-            var isFile = selectedPath is not null;
-            var source = isFile ? selectedPath! : address!;
-            var label = isFile ? Path.GetFileName(source) : new Uri(source).Host;
-            _allCards.Add(new MediaCard(title!, channel.Platform, isFile ? "PC 파일" : "링크", label,
-                isFile ? "파일 확인 필요" : "링크 사용 가능", "안 봄", source, channel.ChannelUrl, publishedAt));
+            var primarySource = !string.IsNullOrWhiteSpace(address) ? address : filePath!;
+            var sourceLabel = !string.IsNullOrWhiteSpace(address) ? new Uri(address).Host : Path.GetFileName(filePath) ?? filePath!;
+            var hasUrl = !string.IsNullOrWhiteSpace(address);
+            var hasFile = !string.IsNullOrWhiteSpace(filePath);
+            var sourceType = hasUrl && hasFile ? "링크+파일" : hasUrl ? "링크" : "PC 파일";
+            _allCards.Add(new MediaCard(title!, channel.Platform, sourceType, sourceLabel,
+                hasFile ? File.Exists(filePath) ? "파일 확인됨" : "파일 확인 필요" : "링크 사용 가능",
+                "안 봄", primarySource, channel.ChannelUrl, publishedAt, onlineUrl: address, localFilePath: filePath));
             SaveChannel(channel);
             UpdateCards();
             dialog.Close();
@@ -1036,12 +1167,18 @@ public partial class MainWindow : Window
             {
                 new TextBlock { Text = $"{channel.DisplayName} 영상 추가", FontSize = 20, FontWeight = Avalonia.Media.FontWeight.Bold },
                 titleInput, urlInput,
-                new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8, Children = { chooseFile, fileLabel } },
+                new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                    ColumnSpacing = 8,
+                    Children = { filePathInput, chooseFile }
+                },
                 dateRow,
                 calendarPopup, error,
                 new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Spacing = 8, Children = { cancel, save } }
             }
         };
+        Grid.SetColumn(chooseFile, 1);
         await dialog.ShowDialog(this);
     }
 
@@ -1386,6 +1523,119 @@ public partial class MainWindow : Window
         await settings.ShowDialog(this);
     }
 
+    private async void ExportCsv_Click(object? sender, RoutedEventArgs e) => await ExportLibraryAsync("csv");
+
+    private async void ExportXlsx_Click(object? sender, RoutedEventArgs e) => await ExportLibraryAsync("xlsx");
+
+    private async Task ExportLibraryAsync(string format)
+    {
+        var isExcel = format == "xlsx";
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = isExcel ? "Excel 라이브러리 내보내기" : "CSV 라이브러리 내보내기",
+            SuggestedFileName = $"vod-library.{format}",
+            FileTypeChoices = [new FilePickerFileType(isExcel ? "Excel 통합 문서" : "CSV 파일") { Patterns = [$"*.{format}"] }]
+        });
+        if (file is null) return;
+        try
+        {
+            var saved = _localDatabase.LoadAll();
+            if (isExcel) LibraryTransfer.ExportXlsx(file.Path.LocalPath, saved);
+            else LibraryTransfer.ExportCsv(file.Path.LocalPath, saved);
+            await ShowTransferMessageAsync("내보내기 완료", "라이브러리를 파일로 내보냈습니다.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            await ShowTransferMessageAsync("내보내기 실패", exception.Message);
+        }
+    }
+
+    private async void ImportCsv_Click(object? sender, RoutedEventArgs e)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "CSV 라이브러리 가져오기", AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("CSV 파일") { Patterns = ["*.csv"] }]
+        });
+        if (files.Count == 0) return;
+        try
+        {
+            var rows = LibraryTransfer.ImportCsv(files[0].Path.LocalPath);
+            foreach (var group in rows.GroupBy(row => $"{row.Platform}:{row.ChannelId}", StringComparer.OrdinalIgnoreCase))
+            {
+                var urls = group.Select(row => row.ChannelUrl).Where(url => url.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                if (urls.Length > 1) throw new InvalidDataException($"{group.First().Platform}/{group.First().ChannelId}에 서로 다른 채널 주소가 포함되어 있습니다.");
+                var existingChannel = _channels.FirstOrDefault(item => item.Platform.Equals(group.First().Platform, StringComparison.OrdinalIgnoreCase) && item.ChannelId.Equals(group.First().ChannelId, StringComparison.OrdinalIgnoreCase));
+                if (existingChannel is not null && urls.Length == 1 && !existingChannel.ChannelUrl.Equals(urls[0], StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"{group.First().Platform}/{group.First().ChannelId}의 채널 주소가 기존 데이터와 일치하지 않습니다.");
+            }
+            foreach (var group in rows.GroupBy(row => $"{row.Platform}:{row.VodId}", StringComparer.OrdinalIgnoreCase))
+                if (group.Select(row => row.ChannelId).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+                    throw new InvalidDataException($"VOD ID {group.First().VodId}가 서로 다른 채널에 중복 지정되어 있습니다.");
+            var added = 0;
+            foreach (var row in rows)
+            {
+                var channel = _channels.FirstOrDefault(item => item.Platform.Equals(row.Platform, StringComparison.OrdinalIgnoreCase) && item.ChannelId.Equals(row.ChannelId, StringComparison.OrdinalIgnoreCase));
+                var channelUrl = row.ChannelUrl;
+                if (channel is null)
+                {
+                    if (string.IsNullOrWhiteSpace(channelUrl))
+                        channelUrl = row.Platform == "SOOP" ? $"https://www.sooplive.com/station/{Uri.EscapeDataString(row.ChannelId)}" : $"https://chzzk.naver.com/{Uri.EscapeDataString(row.ChannelId)}";
+                    channel = new ChannelEntry(row.Platform, row.ChannelId, string.IsNullOrWhiteSpace(row.ChannelName) ? row.ChannelId : row.ChannelName, "", channelUrl);
+                    _channels.Add(channel);
+                }
+                else if (!string.IsNullOrWhiteSpace(channelUrl) && !channel.ChannelUrl.Equals(channelUrl, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"{row.Platform}/{row.ChannelId}의 채널 주소가 기존 데이터와 일치하지 않습니다.");
+
+                var existing = _allCards.FirstOrDefault(card => card.ChannelUrl == channel.ChannelUrl &&
+                    card.VodId.Equals(row.VodId, StringComparison.OrdinalIgnoreCase));
+                if (existing is not null)
+                {
+                    existing.UpdateDetails(row.Title, row.PublishedAt, row.Url, row.LocalFilePath, row.VodId);
+                    // Existing watch state is user data; imports leave it untouched.
+                }
+                else
+                {
+                    var sourceType = row.Url.Length > 0 && row.LocalFilePath.Length > 0 ? "링크+파일" : row.Url.Length > 0 ? "링크" : "PC 파일";
+                    var source = row.Url.Length > 0 ? row.Url : row.LocalFilePath;
+                    _allCards.Add(new MediaCard(row.Title, row.Platform, sourceType,
+                        row.Url.Length > 0 && Uri.TryCreate(row.Url, UriKind.Absolute, out var mediaUri) ? mediaUri.Host : Path.GetFileName(row.LocalFilePath),
+                        row.LocalFilePath.Length > 0 ? File.Exists(row.LocalFilePath) ? "파일 확인됨" : "파일 확인 필요" : "링크 사용 가능",
+                        row.WatchStatus, source, channel.ChannelUrl, row.PublishedAt, onlineUrl: row.Url, localFilePath: row.LocalFilePath,
+                        vodId: row.VodId, lastPositionSeconds: row.LastPositionSeconds, memo: row.Memo,
+                        updatedAt: DateTimeOffset.TryParse(row.UpdatedAt, out var importedUpdated) ? importedUpdated : DateTimeOffset.UtcNow));
+                    added++;
+                }
+                SaveChannel(channel);
+            }
+            ChannelEmptyState.IsVisible = _channels.Count == 0;
+            ChannelScroller.IsVisible = _channels.Count > 0;
+            UpdateCards();
+            await ShowTransferMessageAsync("가져오기 완료", $"{rows.Count}개 항목을 확인했고, 새로 추가한 항목은 {added}개입니다. 기존 항목의 시청 상태는 유지했습니다.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+        {
+            await ShowTransferMessageAsync("가져오기 실패", exception.Message);
+        }
+    }
+
+    private async Task ShowTransferMessageAsync(string title, string message)
+    {
+        var close = new Button { Content = "확인", MinWidth = 80, IsDefault = true };
+        var dialog = new Window
+        {
+            Title = title, Width = 440, Height = 190, CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel { Margin = new Thickness(22), Spacing = 16, Children =
+            {
+                new TextBlock { Text = message, TextWrapping = Avalonia.Media.TextWrapping.Wrap, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center },
+                new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Children = { close } }
+            }}
+        };
+        close.Click += (_, _) => dialog.Close();
+        await dialog.ShowDialog(this);
+    }
+
     private async void OpenLicenseReference_Click(object? sender, RoutedEventArgs e)
     {
         if (sender is Button { Tag: string url } && Uri.TryCreate(url, UriKind.Absolute, out var uri))
@@ -1407,6 +1657,18 @@ public partial class MainWindow : Window
     ];
     private void SearchBox_TextChanged(object? sender, TextChangedEventArgs e) => UpdateCards();
 
+    private void StatusFilter_SelectionChanged(object? sender, SelectionChangedEventArgs e) => UpdateCards();
+
+    private void SortOrder_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (!_isLoadingSettings && SortOrder.SelectedIndex >= 0)
+        {
+            var value = SortOrder.SelectedIndex switch { 1 => "RecentAdded", 2 => "Title", _ => "PublishedAt" };
+            _settingsStore.SaveSortOrder(value);
+        }
+        UpdateCards();
+    }
+
     private string? GetSelectedPlatform() => PlatformTabs.SelectedItem is TabItem tab
         ? tab.Tag?.ToString() switch
         {
@@ -1422,14 +1684,36 @@ public partial class MainWindow : Window
 
         var selectedPlatform = GetSelectedPlatform();
         var query = SearchBox?.Text?.Trim();
+        var normalizedDateQuery = query?.Replace('/', '-').Replace('.', '-');
+        var digitDateQuery = query is null ? "" : new string(query.Where(char.IsDigit).ToArray());
+        var statusFilter = StatusFilter?.SelectedIndex ?? 0;
+        IEnumerable<MediaCard> filtered = _allCards.Where(card =>
+            _selectedChannel is not null &&
+            (selectedPlatform is null || card.PlatformLabel == selectedPlatform) &&
+            card.ChannelUrl == _selectedChannel.ChannelUrl &&
+            (statusFilter == 0 || card.WatchStatusLabel == (statusFilter switch
+            {
+                1 => "미시청",
+                2 => "시청중",
+                3 => "시청완료",
+                _ => ""
+            })) &&
+            (string.IsNullOrWhiteSpace(query) ||
+             card.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+             card.PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
+                 .Contains(normalizedDateQuery!, StringComparison.OrdinalIgnoreCase) == true ||
+             (digitDateQuery.Length >= 4 && card.PublishedAt?.ToLocalTime().ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture)
+                 .Contains(digitDateQuery, StringComparison.OrdinalIgnoreCase) == true)));
+        filtered = SortOrder?.SelectedIndex switch
+        {
+            1 => filtered.OrderByDescending(card => _allCards.IndexOf(card)),
+            2 => filtered.OrderBy(card => card.Title, StringComparer.CurrentCultureIgnoreCase),
+            _ => filtered.OrderByDescending(card => card.PublishedAt.HasValue)
+                .ThenByDescending(card => card.PublishedAt)
+                .ThenBy(card => card.Title, StringComparer.CurrentCultureIgnoreCase)
+        };
         _visibleCards.Clear();
-        foreach (var card in _allCards.Where(card =>
-                     _selectedChannel is not null &&
-                     (selectedPlatform is null || card.PlatformLabel == selectedPlatform) &&
-                     card.ChannelUrl == _selectedChannel.ChannelUrl &&
-                     (string.IsNullOrWhiteSpace(query) ||
-                      card.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                      card.SourceLabel.Contains(query, StringComparison.OrdinalIgnoreCase))))
+        foreach (var card in filtered)
         {
             _visibleCards.Add(card);
         }
@@ -1469,33 +1753,61 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     private Bitmap? _thumbnail;
     private int _watchStatusIndex;
     private bool _isSelected;
+    private string _title;
+    private DateTimeOffset? _publishedAt;
+    private string? _onlineUrl;
+    private string? _localFilePath;
+    private string _sourceTypeLabel;
+    private string _sourceLabel;
+    private string _availabilityLabel;
+    private string _memo;
+    private string _vodId;
+    private double _lastPositionSeconds;
+    private DateTimeOffset _updatedAt;
 
     public MediaCard(string title, string platformLabel, string sourceTypeLabel, string sourceLabel,
         string availabilityLabel, string watchStatusLabel, string sourceValue, string? channelUrl = null,
-        DateTimeOffset? publishedAt = null, string? thumbnailUrl = null, string? thumbnailPath = null)
+        DateTimeOffset? publishedAt = null, string? thumbnailUrl = null, string? thumbnailPath = null,
+        string? onlineUrl = null, string? localFilePath = null, string? vodId = null,
+        double lastPositionSeconds = 0, string? memo = null, DateTimeOffset? updatedAt = null)
     {
-        Title = title;
+        _title = title;
         PlatformLabel = platformLabel;
-        SourceTypeLabel = sourceTypeLabel;
-        SourceLabel = sourceLabel;
-        AvailabilityLabel = availabilityLabel;
+        _sourceTypeLabel = sourceTypeLabel;
+        _sourceLabel = sourceLabel;
+        _availabilityLabel = availabilityLabel;
         _watchStatusIndex = Array.IndexOf(WatchStatuses, watchStatusLabel);
         if (_watchStatusIndex < 0) _watchStatusIndex = 0;
-        SourceValue = sourceValue;
         ChannelUrl = channelUrl;
-        PublishedAt = publishedAt;
+        _publishedAt = publishedAt;
         ThumbnailUrl = thumbnailUrl;
         ThumbnailPath = thumbnailPath;
+        _onlineUrl = NullIfBlank(onlineUrl) ?? (sourceTypeLabel == "PC 파일" ? null : IsHttpUrl(sourceValue) ? sourceValue : null);
+        _localFilePath = NullIfBlank(localFilePath) ?? (sourceTypeLabel == "PC 파일" ? NullIfBlank(sourceValue) : null);
+        _vodId = string.IsNullOrWhiteSpace(vodId) ? LibraryTransfer.GetVodId(platformLabel, _onlineUrl ?? "", _localFilePath ?? "", title) : vodId;
+        _lastPositionSeconds = Math.Max(0, lastPositionSeconds);
+        _memo = memo ?? "";
+        _updatedAt = updatedAt ?? DateTimeOffset.UtcNow;
+        if (_onlineUrl is not null && _localFilePath is not null)
+            RefreshSourceLabels();
     }
 
-    public string Title { get; }
+    public string Title => _title;
     public string PlatformLabel { get; }
-    public string SourceTypeLabel { get; }
-    public string SourceLabel { get; }
-    public string AvailabilityLabel { get; }
-    public string SourceValue { get; }
+    public string SourceTypeLabel => _sourceTypeLabel;
+    public string SourceLabel => _sourceLabel;
+    public string AvailabilityLabel => _availabilityLabel;
+    public string SourceValue => _onlineUrl ?? _localFilePath ?? "";
+    public string? OnlineUrl => _onlineUrl;
+    public string? LocalFilePath => _localFilePath;
+    public string VodId => _vodId;
+    public double LastPositionSeconds => _lastPositionSeconds;
+    public string Memo => _memo;
+    public DateTimeOffset UpdatedAt => _updatedAt;
+    public string LocalFilePathLabel => _localFilePath ?? "";
+    public bool HasLocalFilePath => !string.IsNullOrWhiteSpace(_localFilePath);
     public string? ChannelUrl { get; }
-    public DateTimeOffset? PublishedAt { get; }
+    public DateTimeOffset? PublishedAt => _publishedAt;
     public string? ThumbnailUrl { get; }
     public string? ThumbnailPath { get; private set; }
     public bool ShowThumbnails
@@ -1519,6 +1831,44 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public string WatchStatusLabel => WatchStatuses[_watchStatusIndex];
     public IBrush WatchStatusBackground => new SolidColorBrush(Color.Parse(WatchStatusColors[_watchStatusIndex]));
     public IBrush WatchStatusForeground => Brushes.White;
+
+    public void UpdateDetails(string title, DateTimeOffset? publishedAt, string? onlineUrl, string? localFilePath, string? vodId = null)
+    {
+        _title = title;
+        _publishedAt = publishedAt;
+        _onlineUrl = NullIfBlank(onlineUrl);
+        _localFilePath = NullIfBlank(localFilePath);
+        _vodId = string.IsNullOrWhiteSpace(vodId) ? LibraryTransfer.GetVodId(PlatformLabel, _onlineUrl ?? "", _localFilePath ?? "", title) : vodId;
+        _updatedAt = DateTimeOffset.UtcNow;
+        RefreshSourceLabels();
+        OnPropertyChanged(nameof(Title));
+        OnPropertyChanged(nameof(PublishedAt));
+        OnPropertyChanged(nameof(PublishedAtLabel));
+        OnPropertyChanged(nameof(OnlineUrl));
+        OnPropertyChanged(nameof(LocalFilePath));
+        OnPropertyChanged(nameof(LocalFilePathLabel));
+        OnPropertyChanged(nameof(HasLocalFilePath));
+        OnPropertyChanged(nameof(SourceValue));
+        OnPropertyChanged(nameof(SourceTypeLabel));
+        OnPropertyChanged(nameof(SourceLabel));
+        OnPropertyChanged(nameof(AvailabilityLabel));
+    }
+
+    private void RefreshSourceLabels()
+    {
+        _sourceTypeLabel = _onlineUrl is not null && _localFilePath is not null ? "링크+파일" :
+            _onlineUrl is not null ? "링크" : "PC 파일";
+        _sourceLabel = _onlineUrl is not null && Uri.TryCreate(_onlineUrl, UriKind.Absolute, out var uri)
+            ? uri.Host
+            : _localFilePath is not null ? Path.GetFileName(_localFilePath) : "링크 없음";
+        _availabilityLabel = _localFilePath is not null
+            ? File.Exists(_localFilePath) ? "파일 확인됨" : "파일 확인 필요"
+            : "링크 사용 가능";
+    }
+
+    private static bool IsHttpUrl(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+    private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     public void CycleWatchStatus()
     {
