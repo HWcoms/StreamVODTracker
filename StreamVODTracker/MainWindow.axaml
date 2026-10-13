@@ -172,6 +172,10 @@
                                     <TextBlock Text="플랫폼별 등록 영상을 카드로 모아 보여줍니다." FontSize="11" Foreground="#898D9B" />
                                 </StackPanel>
                                 <StackPanel x:Name="ChannelActionBar" Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" IsVisible="False">
+                                    <Button x:Name="DeleteSelectedButton" Content="🗑 삭제" Height="42" Padding="12,8"
+                                            Classes="primary" IsVisible="False" Click="DeleteSelected_Click" ToolTip.Tip="선택한 영상 삭제" />
+                                    <Button x:Name="EditSelectedButton" Content="✎ 수정" Height="42" Padding="12,8"
+                                            IsVisible="False" IsEnabled="False" Click="EditSelected_Click" ToolTip.Tip="영상 한 개를 선택해 수정" />
                                     <Button x:Name="ThumbnailViewButton" Width="42" Height="42" Padding="0" Classes="primary"
                                             HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                                             Click="ThumbnailView_Click" IsVisible="False" ToolTip.Tip="썸네일 표시 전환">
@@ -217,7 +221,7 @@
                                     </Button>
                                 </StackPanel>
                             </Grid>
-                            <Grid Grid.Row="1">
+                            <Grid x:Name="CardsArea" Grid.Row="1" Focusable="True" IsTabStop="True" KeyDown="CardsArea_KeyDown">
                             <Border x:Name="EmptyState" BorderBrush="#ECECF1" BorderThickness="0,1,0,0">
                                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10" MaxWidth="340">
                                     <Border Width="56" Height="56" CornerRadius="18" Background="#F0EDFF" HorizontalAlignment="Center">
@@ -245,7 +249,7 @@
                                         <DataTemplate x:DataType="local:MediaCard">
                                             <Border Width="{Binding CardWidth}" MinHeight="{Binding CardMinHeight}" Margin="0,16,16,0" Padding="15"
                                                     Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
-                                                    PointerPressed="MediaCard_PointerPressed">
+                                                    Tag="grid" Loaded="MediaCard_Loaded" Unloaded="MediaCard_Unloaded" PointerPressed="MediaCard_PointerPressed">
                                                 <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="9">
                                                     <Border Height="142" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
                                                             IsVisible="{Binding ShowThumbnails}">
@@ -277,7 +281,7 @@
                                         <DataTemplate x:DataType="local:MediaCard">
                                         <Border HorizontalAlignment="Stretch" MinHeight="122" Margin="0,10,0,0" Padding="14"
                                                 Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
-                                                PointerPressed="MediaCard_PointerPressed">
+                                                Tag="list" Loaded="MediaCard_Loaded" Unloaded="MediaCard_Unloaded" PointerPressed="MediaCard_PointerPressed">
                                             <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
                                                 <Border Grid.Column="0" Width="160" Height="94" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
                                                         IsVisible="{Binding ShowThumbnails}">
@@ -307,6 +311,10 @@
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
                             </ScrollViewer>
+                            <Canvas x:Name="SelectionOverlay" IsHitTestVisible="False" ClipToBounds="True">
+                                <Border x:Name="SelectionRectangle" IsVisible="False" BorderBrush="#35B879" BorderThickness="1.5"
+                                        Background="#5535B879" CornerRadius="3" />
+                            </Canvas>
                             </Grid>
                         </Grid>
                     </Grid>

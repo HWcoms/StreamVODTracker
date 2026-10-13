@@ -10,7 +10,7 @@ namespace StreamVODTracker;
 [SupportedOSPlatform("windows")]
 public sealed class SettingsWindow : Window
 {
-    public SettingsWindow()
+    public SettingsWindow(bool isDarkTheme, Action<bool> setTheme)
     {
         Title = "플랫폼 API 설정";
         Width = 720;
@@ -28,6 +28,28 @@ public sealed class SettingsWindow : Window
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
             Foreground = Brush.Parse("#666A78")
+        });
+        var themePicker = new ComboBox { MinHeight = 38, Width = 180 };
+        themePicker.Items.Add("라이트");
+        themePicker.Items.Add("다크");
+        themePicker.SelectedIndex = isDarkTheme ? 1 : 0;
+        themePicker.SelectionChanged += (_, _) => setTheme(themePicker.SelectedIndex == 1);
+        content.Children.Add(new Border
+        {
+            BorderBrush = Brush.Parse("#E5E6ED"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(16),
+            Child = new StackPanel
+            {
+                Spacing = 8,
+                Children =
+                {
+                    new TextBlock { Text = "화면 테마", FontSize = 16, FontWeight = FontWeight.SemiBold, Foreground = Brush.Parse("#202230") },
+                    new TextBlock { Text = "앱 화면의 밝기를 선택합니다. 선택한 값은 자동 저장됩니다.", FontSize = 12, Foreground = Brush.Parse("#666A78") },
+                    themePicker
+                }
+            }
         });
         content.Children.Add(BuildPlatformSection("치지직", "CHZZK",
             "https://developers.chzzk.naver.com/",

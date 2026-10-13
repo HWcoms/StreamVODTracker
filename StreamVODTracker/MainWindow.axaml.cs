@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Documents;
 using Avalonia.Interactivity;
 using Avalonia.Media;
@@ -10,6 +11,8 @@ using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.Input;
+using Avalonia.VisualTree;
 
 namespace StreamVODTracker;
 
@@ -18,6 +21,9 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<MediaCard> _allCards = [];
     private readonly ObservableCollection<MediaCard> _visibleCards = [];
     private readonly ObservableCollection<ChannelEntry> _channels = [];
+    private readonly AppSettingsStore _settingsStore = new(AppContext.BaseDirectory);
+    private readonly List<Border> _cardVisuals = [];
+    private readonly HashSet<MediaCard> _dragSelectionBase = [];
     private readonly LocalCsvDatabase _localDatabase = new(AppContext.BaseDirectory);
     private static readonly SemaphoreSlim ThumbnailLoadLimiter = new(4);
     private ChannelEntry? _selectedChannel;
@@ -29,13 +35,18 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        AddHandler(InputElement.PointerPressedEvent, Window_PointerPressed, Avalonia.Interactivity.RoutingStrategies.Bubble);
+        AddHandler(InputElement.PointerMovedEvent, Window_PointerMoved, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
+        AddHandler(InputElement.PointerReleasedEvent, Window_PointerReleased, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
+        CardsArea.AddHandler(InputElement.PointerPressedEvent, CardsArea_PointerPressed,
+            Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
         CardsList.ItemsSource = _visibleCards;
         CardsListRows.ItemsSource = _visibleCards;
         ChannelCards.ItemsSource = _channels;
         LicenseEntries.ItemsSource = BuildLicenseEntries();
         LoadLocalDatabase();
         PlatformTabs.SelectedIndex = 0;
-        ApplyTheme(false);
+        ApplyTheme(_settingsStore.LoadIsDarkTheme());
         _channelStatusTimer.Tick += ChannelStatusTimer_Tick;
         _channelStatusTimer.Start();
         Closed += (_, _) =>
@@ -237,6 +248,7 @@ public partial class MainWindow : Window
     private void ApplyTheme(bool isDark)
     {
         _isDarkTheme = isDark;
+        _settingsStore.SaveIsDarkTheme(isDark);
         if (Application.Current is { } app)
             app.RequestedThemeVariant = isDark ? ThemeVariant.Dark : ThemeVariant.Light;
 
@@ -472,10 +484,235 @@ public partial class MainWindow : Window
         await Launcher.LaunchUriAsync(uri);
     }
 
-    private void MediaCard_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
+    private MediaCard? _selectionAnchor;
+    private bool _isLassoSelecting;
+    private Point _lassoStart;
+
+    private void MediaCard_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (sender is not Border { DataContext: MediaCard selectedCard }) return;
-        foreach (var card in _allCards) card.IsSelected = ReferenceEquals(card, selectedCard);
+        if (e.Source is Button)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var modifiers = e.KeyModifiers;
+        if (modifiers.HasFlag(KeyModifiers.Shift))
+        {
+            var start = _visibleCards.IndexOf(_selectionAnchor ?? selectedCard);
+            var end = _visibleCards.IndexOf(selectedCard);
+            if (start < 0) start = end;
+            if (!modifiers.HasFlag(KeyModifiers.Control))
+                foreach (var card in _allCards) card.IsSelected = false;
+            for (var index = Math.Min(start, end); index <= Math.Max(start, end); index++)
+                _visibleCards[index].IsSelected = true;
+        }
+        else if (modifiers.HasFlag(KeyModifiers.Control))
+        {
+            selectedCard.IsSelected = !selectedCard.IsSelected;
+            _selectionAnchor = selectedCard;
+        }
+        else
+        {
+            foreach (var card in _allCards) card.IsSelected = ReferenceEquals(card, selectedCard);
+            _selectionAnchor = selectedCard;
+        }
+
+        CardsArea.Focus();
+        UpdateSelectionButtons();
+        e.Handled = true;
+    }
+
+    private void CardsArea_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(CardsArea).Properties.IsLeftButtonPressed ||
+            e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Shift) ||
+            e.Source is Button || e.Source is TextBlock { Cursor: not null }) return;
+
+        var pressedCard = (e.Source as Control)?.DataContext as MediaCard;
+        if (pressedCard is null)
+            ClearCardSelection();
+        CardsArea.Focus();
+        _dragSelectionBase.Clear();
+        foreach (var card in _allCards.Where(card => card.IsSelected && _visibleCards.Contains(card)))
+            _dragSelectionBase.Add(card);
+        _lassoStart = e.GetPosition(CardsArea);
+        _isLassoSelecting = true;
+        UpdateLasso(e.GetPosition(CardsArea));
+        e.Pointer.Capture(this);
+    }
+
+    private void Window_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (_isLassoSelecting || CardsArea.IsPointerOver) return;
+        if (DeleteSelectedButton.IsPointerOver || EditSelectedButton.IsPointerOver) return;
+        ClearCardSelection();
+    }
+
+    private void Window_PointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_isLassoSelecting && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            UpdateLasso(e.GetPosition(CardsArea));
+    }
+
+    private void Window_PointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (!_isLassoSelecting) return;
+        UpdateLasso(e.GetPosition(CardsArea));
+        _isLassoSelecting = false;
+        SelectionRectangle.IsVisible = false;
+        e.Pointer.Capture(null);
+        UpdateSelectionButtons();
+    }
+
+    private void UpdateLasso(Point current)
+    {
+        var left = Math.Min(_lassoStart.X, current.X);
+        var top = Math.Min(_lassoStart.Y, current.Y);
+        var width = Math.Abs(current.X - _lassoStart.X);
+        var height = Math.Abs(current.Y - _lassoStart.Y);
+        Canvas.SetLeft(SelectionRectangle, left);
+        Canvas.SetTop(SelectionRectangle, top);
+        SelectionRectangle.Width = width;
+        SelectionRectangle.Height = height;
+        SelectionRectangle.IsVisible = width > 2 || height > 2;
+
+        var selection = new HashSet<MediaCard>(_dragSelectionBase);
+        var dragRect = new Rect(left, top, width, height);
+        foreach (var border in _cardVisuals)
+        {
+            if (border.Tag?.ToString() != (_isListView ? "list" : "grid") ||
+                border.DataContext is not MediaCard card || !_visibleCards.Contains(card)) continue;
+            var position = border.TranslatePoint(new Point(0, 0), CardsArea);
+            if (position is not { } topLeft) continue;
+            var bounds = new Rect(topLeft, border.Bounds.Size);
+            if (bounds.Right >= dragRect.Left && bounds.Left <= dragRect.Right &&
+                bounds.Bottom >= dragRect.Top && bounds.Top <= dragRect.Bottom)
+                selection.Add(card);
+        }
+
+        foreach (var card in _visibleCards)
+            card.IsSelected = selection.Contains(card);
+        UpdateSelectionButtons();
+    }
+
+    private void MediaCard_Loaded(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Border border && !_cardVisuals.Contains(border))
+            _cardVisuals.Add(border);
+    }
+
+    private void MediaCard_Unloaded(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Border border)
+            _cardVisuals.Remove(border);
+    }
+
+    private void CardsArea_KeyDown(object? sender, KeyEventArgs e)
+    {
+        var scrollViewer = _isListView ? CardsListScroller : CardsScroller;
+        if (e.Key == Key.A && e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            foreach (var card in _visibleCards) card.IsSelected = true;
+            _selectionAnchor = _visibleCards.FirstOrDefault();
+            UpdateSelectionButtons();
+            e.Handled = true;
+            return;
+        }
+
+        var offset = scrollViewer.Offset;
+        switch (e.Key)
+        {
+            case Key.Home:
+                scrollViewer.Offset = new Vector(offset.X, 0);
+                break;
+            case Key.End:
+                scrollViewer.Offset = new Vector(offset.X, scrollViewer.Extent.Height);
+                break;
+            case Key.PageUp:
+                scrollViewer.Offset = new Vector(offset.X, Math.Max(0, offset.Y - scrollViewer.Viewport.Height));
+                break;
+            case Key.PageDown:
+                scrollViewer.Offset = new Vector(offset.X, Math.Min(scrollViewer.Extent.Height, offset.Y + scrollViewer.Viewport.Height));
+                break;
+            default:
+                return;
+        }
+        e.Handled = true;
+    }
+
+    private void ClearCardSelection()
+    {
+        foreach (var card in _allCards) card.IsSelected = false;
+        _selectionAnchor = null;
+        UpdateSelectionButtons();
+    }
+
+    private void UpdateSelectionButtons()
+    {
+        if (DeleteSelectedButton is null || EditSelectedButton is null) return;
+        var selectedCount = _allCards.Count(card => card.IsSelected && _visibleCards.Contains(card));
+        DeleteSelectedButton.IsVisible = selectedCount > 0;
+        EditSelectedButton.IsVisible = selectedCount > 0;
+        EditSelectedButton.IsEnabled = selectedCount == 1;
+    }
+
+    private async void DeleteSelected_Click(object? sender, RoutedEventArgs e)
+    {
+        var selected = _allCards.Where(card => card.IsSelected && _visibleCards.Contains(card)).ToArray();
+        if (selected.Length == 0) return;
+
+        var confirm = new Window
+        {
+            Title = "영상 삭제",
+            Width = 360,
+            Height = 170,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        var cancel = new Button { Content = "취소", MinWidth = 78, IsCancel = true };
+        var delete = new Button { Content = "삭제", MinWidth = 78, Classes = { "primary" }, IsDefault = true };
+        cancel.Click += (_, _) => confirm.Close(false);
+        delete.Click += (_, _) => confirm.Close(true);
+        confirm.Content = new StackPanel
+        {
+            Margin = new Thickness(22),
+            Spacing = 18,
+            Children =
+            {
+                new TextBlock { Text = $"선택한 영상 {selected.Length}개를 삭제할까요?", VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center },
+                new StackPanel
+                {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                    Spacing = 8,
+                    Children = { cancel, delete }
+                }
+            }
+        };
+        if (await confirm.ShowDialog<bool?>(this) != true) return;
+
+        var affectedChannels = selected.Select(card => card.ChannelUrl)
+            .Where(url => url is not null)
+            .Distinct()
+            .Select(url => _channels.FirstOrDefault(channel => channel.ChannelUrl == url))
+            .Where(channel => channel is not null)
+            .ToArray();
+        foreach (var card in selected)
+        {
+            _allCards.Remove(card);
+            card.Dispose();
+        }
+        ClearCardSelection();
+        foreach (var channel in affectedChannels)
+            SaveChannel(channel!);
+        UpdateCards();
+    }
+
+    private void EditSelected_Click(object? sender, RoutedEventArgs e)
+    {
+        // The edit action is enabled for a single selection; the edit form is handled in the next editing step.
     }
 
     private void GridView_Click(object? sender, RoutedEventArgs e)
@@ -663,6 +900,82 @@ public partial class MainWindow : Window
         var titleInput = new TextBox { PlaceholderText = "영상 제목", MinHeight = 38 };
         var urlInput = new TextBox { PlaceholderText = "영상 링크 (파일을 고르면 비워 둬도 됩니다)", MinHeight = 38 };
         var dateInput = new TextBox { PlaceholderText = "방송 날짜 (선택, 예: 2026-10-13)", MinHeight = 38 };
+        var calendarButton = new Button
+        {
+            Content = new TextBlock
+            {
+                Text = "\uE787",
+                FontFamily = new FontFamily("Segoe Fluent Icons"),
+                FontSize = 20,
+                Foreground = new SolidColorBrush(Color.Parse("#7C5CFC")),
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            },
+            Width = 38,
+            Height = 38,
+            Padding = new Thickness(0),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center
+        };
+        ToolTip.SetTip(calendarButton, "날짜 선택");
+        var calendar = new Calendar { SelectedDate = DateTime.Today };
+        var todayButton = new Button
+        {
+            Content = "오늘",
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            MinWidth = 64,
+            Padding = new Thickness(12, 6),
+            Foreground = new SolidColorBrush(Color.Parse("#7C5CFC"))
+        };
+        var calendarPopup = new Popup
+        {
+            PlacementTarget = calendarButton,
+            Placement = PlacementMode.Bottom,
+            Child = new Border
+            {
+                Background = Brushes.White,
+                BorderBrush = Brushes.LightGray,
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(6),
+                Child = new StackPanel
+                {
+                    Spacing = 6,
+                    Children = { calendar, todayButton }
+                }
+            }
+        };
+        todayButton.Click += (_, _) =>
+        {
+            var today = DateTime.Today;
+            calendar.DisplayDate = today;
+            calendar.SelectedDate = today;
+            dateInput.Text = today.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            calendarPopup.IsOpen = false;
+        };
+        var dateRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,38"), ColumnSpacing = 8 };
+        dateRow.Children.Add(dateInput);
+        dateRow.Children.Add(calendarButton);
+        Grid.SetColumn(calendarButton, 1);
+        calendarButton.Click += (_, _) =>
+        {
+            if (DateTime.TryParseExact(dateInput.Text?.Trim(), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out var currentDate))
+            {
+                calendar.DisplayDate = currentDate;
+                calendar.SelectedDate = currentDate;
+            }
+            calendarPopup.IsOpen = !calendarPopup.IsOpen;
+        };
+        calendar.PropertyChanged += (_, args) =>
+        {
+            if (args.Property == Calendar.SelectedDateProperty && calendar.SelectedDate is { } date)
+            {
+                dateInput.Text = date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                calendarPopup.IsOpen = false;
+            }
+        };
         var fileLabel = new TextBlock { Text = "선택된 파일 없음", FontSize = 12, Foreground = Brushes.Gray, TextTrimming = Avalonia.Media.TextTrimming.CharacterEllipsis };
         string? selectedPath = null;
         var error = new TextBlock { Foreground = Brushes.IndianRed, FontSize = 12, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
@@ -694,13 +1007,13 @@ public partial class MainWindow : Window
             DateTimeOffset? publishedAt = null;
             if (!string.IsNullOrWhiteSpace(dateInput.Text))
             {
-                if (!DateTimeOffset.TryParse(dateInput.Text, System.Globalization.CultureInfo.CurrentCulture,
-                        System.Globalization.DateTimeStyles.AssumeLocal, out var parsedDate))
+                if (!DateTime.TryParseExact(dateInput.Text, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None, out var parsedDate))
                 {
                     error.Text = "날짜를 YYYY-MM-DD 형식으로 입력해 주세요.";
                     return;
                 }
-                publishedAt = parsedDate;
+                publishedAt = new DateTimeOffset(parsedDate, TimeZoneInfo.Local.GetUtcOffset(parsedDate));
             }
             if (string.IsNullOrWhiteSpace(title)) { error.Text = "영상 제목을 입력해 주세요."; return; }
             if (selectedPath is null && (!Uri.TryCreate(address, UriKind.Absolute, out var mediaUri) ||
@@ -724,7 +1037,8 @@ public partial class MainWindow : Window
                 new TextBlock { Text = $"{channel.DisplayName} 영상 추가", FontSize = 20, FontWeight = Avalonia.Media.FontWeight.Bold },
                 titleInput, urlInput,
                 new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 8, Children = { chooseFile, fileLabel } },
-                dateInput, error,
+                dateRow,
+                calendarPopup, error,
                 new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Spacing = 8, Children = { cancel, save } }
             }
         };
@@ -1068,7 +1382,7 @@ public partial class MainWindow : Window
     private async void OpenSettings_Click(object? sender, RoutedEventArgs e)
     {
         if (!OperatingSystem.IsWindows()) return;
-        var settings = new SettingsWindow();
+        var settings = new SettingsWindow(_isDarkTheme, ApplyTheme);
         await settings.ShowDialog(this);
     }
 
@@ -1119,6 +1433,12 @@ public partial class MainWindow : Window
         {
             _visibleCards.Add(card);
         }
+        var visibleCards = _visibleCards.ToHashSet();
+        foreach (var card in _allCards.Where(card => card.IsSelected && !visibleCards.Contains(card)))
+            card.IsSelected = false;
+        if (_selectionAnchor is not null && !visibleCards.Contains(_selectionAnchor))
+            _selectionAnchor = null;
+        UpdateSelectionButtons();
 
         var hasCards = _visibleCards.Count > 0;
         foreach (var card in _visibleCards) card.ShowThumbnails = _showThumbnails;
