@@ -1,6 +1,9 @@
 # StreamVODTracker
 
-A Windows desktop app for organizing CHZZK and SOOP VODs alongside local videos.
+A Windows desktop application for managing online VODs and offline Video Files from selected channels on streaming platforms such as CHZZK and SOOP, with watch history tracking.
+
+## Preview
+<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/7508a3bb-d927-4bb6-92a6-53386093f875" />
 
 ## Features
 
