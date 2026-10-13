@@ -190,12 +190,22 @@
                             <Grid Grid.Column="1" RowDefinitions="Auto,*">
                             <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,12">
                                 <StackPanel Spacing="3">
-                                    <TextBlock x:Name="ListTitle" Text="다시보기 리스트" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                        <TextBlock x:Name="ListTitle" Text="다시보기 리스트" FontSize="15" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                        <TextBlock x:Name="ListTotalCountText" Text="총 0개" FontSize="12" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                                        <StackPanel Orientation="Horizontal" Spacing="5" VerticalAlignment="Center">
+                                            <TextBlock x:Name="UnwatchedCountText" Text="0" FontSize="12" FontWeight="Bold" Foreground="#D84040" VerticalAlignment="Center" ToolTip.Tip="미시청" />
+                                            <TextBlock Text="/" FontSize="12" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                                            <TextBlock x:Name="WatchingCountText" Text="0" FontSize="12" FontWeight="Bold" Foreground="#D99B18" VerticalAlignment="Center" ToolTip.Tip="시청중" />
+                                            <TextBlock Text="/" FontSize="12" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                                            <TextBlock x:Name="CompletedCountText" Text="0" FontSize="12" FontWeight="Bold" Foreground="#2E9B57" VerticalAlignment="Center" ToolTip.Tip="시청완료" />
+                                        </StackPanel>
+                                    </StackPanel>
                                     <TextBlock Text="플랫폼별 등록 영상을 카드로 모아 보여줍니다." FontSize="11" Foreground="#898D9B" />
                                 </StackPanel>
                                 <StackPanel x:Name="ChannelActionBar" Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" IsVisible="False">
                                     <Button x:Name="DeleteSelectedButton" Content="🗑 삭제" Height="42" Padding="12,8"
-                                            Classes="primary" IsVisible="False" Click="DeleteSelected_Click" ToolTip.Tip="선택한 영상 삭제" />
+                                            IsVisible="False" Click="DeleteSelected_Click" ToolTip.Tip="선택한 영상 삭제" />
                                     <Button x:Name="EditSelectedButton" Content="✎ 수정" Height="42" Padding="12,8"
                                             IsVisible="False" IsEnabled="False" Click="EditSelected_Click" ToolTip.Tip="영상 한 개를 선택해 수정" />
                                     <Button x:Name="ThumbnailViewButton" Width="42" Height="42" Padding="0" Classes="primary"
@@ -300,8 +310,14 @@
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
                             </ScrollViewer>
-                            <ScrollViewer x:Name="CardsListScroller" IsVisible="False" HorizontalScrollBarVisibility="Disabled">
-                                <ItemsControl x:Name="CardsListRows">
+                            <ScrollViewer x:Name="CardsListScroller" IsVisible="False" HorizontalScrollBarVisibility="Disabled"
+                                          VerticalScrollBarVisibility="Auto">
+                                <ItemsControl x:Name="CardsListRows" Margin="0,0,18,0">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <VirtualizingStackPanel />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate x:DataType="local:MediaCard">
                                         <Border HorizontalAlignment="Stretch" MinHeight="122" Margin="0,10,0,0" Padding="14"

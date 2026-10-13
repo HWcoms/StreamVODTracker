@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<MediaCard> _allCards = [];
     private readonly ObservableCollection<MediaCard> _visibleCards = [];
     private readonly ObservableCollection<ChannelEntry> _channels = [];
+    private readonly ObservableCollection<ChannelEntry> _visibleChannels = [];
     private readonly AppSettingsStore _settingsStore = new(AppContext.BaseDirectory);
     private readonly List<Border> _cardVisuals = [];
     private readonly HashSet<MediaCard> _dragSelectionBase = [];
@@ -34,6 +35,7 @@ public partial class MainWindow : Window
     private bool _isDarkTheme;
     private bool _isLoadingSettings = true;
     private bool _sortDescending = true;
+    private bool _isAllLibraryView;
 
     public MainWindow()
     {
@@ -56,7 +58,7 @@ public partial class MainWindow : Window
             Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
         CardsList.ItemsSource = _visibleCards;
         CardsListRows.ItemsSource = _visibleCards;
-        ChannelCards.ItemsSource = _channels;
+        ChannelCards.ItemsSource = _visibleChannels;
         LicenseEntries.ItemsSource = BuildLicenseEntries();
         LoadLocalDatabase();
         PlatformTabs.SelectedIndex = 0;
@@ -171,7 +173,9 @@ public partial class MainWindow : Window
                     try { card.SetThumbnail(new Bitmap(item.ThumbnailPath)); }
                     catch (Exception exception) when (exception is IOException or ArgumentException or InvalidOperationException) { }
                 }
-                else if (!string.IsNullOrWhiteSpace(item.ThumbnailUrl))
+                if (IsHttpUrl(card.OnlineUrl))
+                    _ = RefreshCardThumbnailAsync(card);
+                else if (!card.HasThumbnail && !string.IsNullOrWhiteSpace(item.ThumbnailUrl))
                 {
                     _ = LoadThumbnailAsync(card, item.ThumbnailUrl);
                 }
@@ -300,6 +304,7 @@ public partial class MainWindow : Window
 
         if (section == "all")
         {
+            _isAllLibraryView = true;
             _selectedChannel = null;
             foreach (var channel in _channels) channel.IsSelected = false;
             PlatformTabs.SelectedIndex = -1;
@@ -316,6 +321,7 @@ public partial class MainWindow : Window
 
         if (section == "licenses")
         {
+            _isAllLibraryView = false;
             PlatformTabs.SelectedIndex = -1;
             PlatformTabs.IsVisible = false;
             LibraryPanel.IsVisible = false;
@@ -327,11 +333,18 @@ public partial class MainWindow : Window
             return;
         }
 
+        _isAllLibraryView = false;
         PlatformTabs.SelectedIndex = section == "soop" ? 1 : 0;
     }
     private void PlatformTabs_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (PageTitle is null || PlatformTabs.SelectedItem is not TabItem tab) return;
+        if (PageTitle is null) return;
+        if (_isAllLibraryView)
+        {
+            UpdateCards();
+            return;
+        }
+        if (PlatformTabs.SelectedItem is not TabItem tab) return;
 
         var section = tab.Tag?.ToString();
         if (_selectedChannel is not null &&
@@ -679,11 +692,24 @@ public partial class MainWindow : Window
     private void UpdateSelectionButtons()
     {
         if (DeleteSelectedButton is null || EditSelectedButton is null) return;
-        var selectedCount = _allCards.Count(card => card.IsSelected && _visibleCards.Contains(card));
+        var selectedCards = _allCards.Where(card => card.IsSelected && _visibleCards.Contains(card)).ToArray();
+        var selectedCount = selectedCards.Length;
         DeleteSelectedButton.IsVisible = selectedCount > 0;
         EditSelectedButton.IsVisible = selectedCount > 0;
         EditSelectedButton.IsEnabled = selectedCount == 1;
+
+        var platform = selectedCards.FirstOrDefault()?.PlatformLabel ?? _selectedChannel?.Platform;
+        var accent = GetPlatformAccentBrush(platform);
+        DeleteSelectedButton.Background = accent;
+        DeleteSelectedButton.Foreground = Brushes.White;
+        EditSelectedButton.Background = selectedCount > 1
+            ? new SolidColorBrush(Color.Parse("#A0A3AF"))
+            : accent;
+        EditSelectedButton.Foreground = Brushes.White;
     }
+
+    private static IBrush GetPlatformAccentBrush(string? platform) =>
+        new SolidColorBrush(Color.Parse(platform == "SOOP" ? "#398FE0" : "#35B879"));
 
     private async void DeleteSelected_Click(object? sender, RoutedEventArgs e)
     {
@@ -868,6 +894,7 @@ public partial class MainWindow : Window
             card.CycleWatchStatus();
             if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
                 SaveChannel(channel);
+            UpdateCards();
         }
     }
 
@@ -898,35 +925,119 @@ public partial class MainWindow : Window
             Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
     }
 
-    private async Task LoadThumbnailAsync(MediaCard card, string? thumbnailUrl)
+    private async Task<bool> LoadThumbnailAsync(MediaCard card, string? thumbnailUrl)
     {
-        if (string.IsNullOrWhiteSpace(thumbnailUrl)) return;
+        if (string.IsNullOrWhiteSpace(thumbnailUrl)) return false;
         var normalizedUrl = thumbnailUrl.StartsWith("//", StringComparison.Ordinal) ? $"https:{thumbnailUrl}" : thumbnailUrl;
         if (!Uri.TryCreate(normalizedUrl, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)) return;
+            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)) return false;
 
         await ThumbnailLoadLimiter.WaitAsync();
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            using var response = await client.GetAsync(uri);
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+            if (card.PlatformLabel == "SOOP")
+                request.Headers.Referrer = Uri.TryCreate(card.OnlineUrl, UriKind.Absolute, out var vodUri)
+                    ? vodUri : new Uri("https://www.sooplive.com/");
+            using var response = await client.SendAsync(request);
             response.EnsureSuccessStatusCode();
             var bytes = await response.Content.ReadAsByteArrayAsync();
-            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } ownerChannel)
-                card.SetThumbnailPath(_localDatabase.SaveThumbnail(ownerChannel.Platform, ownerChannel.ChannelId,
-                    card.Title, card.PublishedAt, normalizedUrl, bytes, response.Content.Headers.ContentType?.MediaType));
             using var stream = new MemoryStream(bytes);
-            card.SetThumbnail(new Bitmap(stream));
+            var bitmap = new Bitmap(stream);
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } ownerChannel)
+            {
+                var path = _localDatabase.SaveThumbnail(ownerChannel.Platform, ownerChannel.ChannelId,
+                    card.Title, card.PublishedAt, normalizedUrl, bytes, response.Content.Headers.ContentType?.MediaType);
+                card.SetThumbnailPath(path);
+            }
+            card.SetThumbnail(bitmap);
             if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } owner)
                 SaveChannel(owner);
+            return true;
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException or ArgumentException)
         {
-            // Leave the thumbnail placeholder visible when an image cannot be loaded.
+            // Keep the already loaded cached thumbnail if the online image cannot be loaded.
+            return false;
         }
         finally
         {
             ThumbnailLoadLimiter.Release();
+        }
+    }
+
+    private async Task RefreshCardThumbnailAsync(MediaCard card, string? refreshedThumbnailUrl = null)
+    {
+        if (!IsHttpUrl(card.OnlineUrl)) return;
+
+        if (!string.IsNullOrWhiteSpace(refreshedThumbnailUrl))
+            card.UpdateThumbnailUrl(refreshedThumbnailUrl);
+
+        var currentThumbnailUrl = card.ThumbnailUrl;
+        if (!string.IsNullOrWhiteSpace(currentThumbnailUrl) && await LoadThumbnailAsync(card, currentThumbnailUrl)) return;
+
+        var fallbackUrl = card.PlatformLabel == "SOOP"
+            ? await FetchSoopVodThumbnailUrlAsync(card.OnlineUrl!)
+            : await FetchPageThumbnailUrlAsync(card.OnlineUrl!);
+        if (!string.IsNullOrWhiteSpace(fallbackUrl) && !string.Equals(fallbackUrl, currentThumbnailUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            card.UpdateThumbnailUrl(fallbackUrl);
+            await LoadThumbnailAsync(card, fallbackUrl);
+        }
+    }
+
+    private static async Task<string?> FetchSoopVodThumbnailUrlAsync(string vodUrl)
+    {
+        if (!Uri.TryCreate(vodUrl, UriKind.Absolute, out var uri)) return null;
+        var match = System.Text.RegularExpressions.Regex.Match(uri.AbsolutePath, @"(?:player|PLAYER/STATION)/(\d+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!match.Success) return await FetchPageThumbnailUrlAsync(vodUrl);
+
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.m.sooplive.com/station/video/a/view")
+            {
+                Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["nTitleNo"] = match.Groups[1].Value,
+                    ["nApiLevel"] = "10"
+                })
+            };
+            request.Headers.Referrer = new Uri(vodUrl);
+            using var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            if (json.RootElement.TryGetProperty("data", out var data))
+                return GetFirstString(data, "thumb", "thumbnail", "thumbnail_url", "thumb_url");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            // Try the VOD page metadata as a fallback.
+        }
+        return await FetchPageThumbnailUrlAsync(vodUrl);
+    }
+
+    private static async Task<string?> FetchPageThumbnailUrlAsync(string pageUrl)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+            var html = await client.GetStringAsync(pageUrl);
+            var match = System.Text.RegularExpressions.Regex.Match(html,
+                "<meta[^>]+(?:property|name)=[\\\"'](?:og:image|twitter:image)[\\\"'][^>]+content=[\\\"']([^\\\"']+)[\\\"']|<meta[^>]+content=[\\\"']([^\\\"']+)[\\\"'][^>]+(?:property|name)=[\\\"'](?:og:image|twitter:image)[\\\"']",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (!match.Success) return null;
+            var value = System.Net.WebUtility.HtmlDecode(match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value);
+            return Uri.TryCreate(new Uri(pageUrl), value, out var imageUri) ? imageUri.ToString() : null;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidOperationException or UriFormatException)
+        {
+            return null;
         }
     }
 
@@ -942,11 +1053,17 @@ public partial class MainWindow : Window
             var addedCount = 0;
             foreach (var video in foundVideos)
             {
-                if (_allCards.Any(card => string.Equals(card.SourceValue.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))) continue;
+                var existingCard = _allCards.FirstOrDefault(card =>
+                    string.Equals(card.OnlineUrl?.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+                if (existingCard is not null)
+                {
+                    _ = RefreshCardThumbnailAsync(existingCard, video.ThumbnailUrl);
+                    continue;
+                }
                 var card = new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
                     "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl);
                 _allCards.Add(card);
-                _ = LoadThumbnailAsync(card, video.ThumbnailUrl);
+                _ = RefreshCardThumbnailAsync(card, video.ThumbnailUrl);
                 addedCount++;
             }
             SaveChannel(channel);
@@ -974,19 +1091,28 @@ public partial class MainWindow : Window
         var videos = new List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl)>();
         if (channel.Platform == "SOOP")
         {
-            var url = $"https://chapi.sooplive.com/api/{Uri.EscapeDataString(channelId)}/vods/all/streamer?page=1&per_page=60&orderby=reg_date";
-            using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url));
-            if (json.RootElement.TryGetProperty("data", out var data) && data.ValueKind == System.Text.Json.JsonValueKind.Array)
+            const int pageSize = 60;
+            var seenVodIds = new HashSet<string>(StringComparer.Ordinal);
+            for (var page = 1; page <= 1000; page++)
             {
+                var url = $"https://chapi.sooplive.com/api/{Uri.EscapeDataString(channelId)}/vods/all/streamer?page={page}&per_page={pageSize}&orderby=reg_date";
+                using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url));
+                if (!json.RootElement.TryGetProperty("data", out var data) ||
+                    data.ValueKind != System.Text.Json.JsonValueKind.Array || data.GetArrayLength() == 0) break;
+
+                var newVodCount = 0;
                 foreach (var item in data.EnumerateArray())
                 {
                     var id = item.TryGetProperty("title_no", out var titleNo) ? titleNo.ToString() : null;
                     var title = item.TryGetProperty("title_name", out var titleName) ? titleName.GetString() : null;
-                    if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(title)) continue;
+                    if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(title) || !seenVodIds.Add(id)) continue;
+                    newVodCount++;
                     var dateValue = item.TryGetProperty("reg_date", out var regDate) ? regDate.ToString() : null;
                     var thumbnailUrl = GetFirstString(item, "thumb", "thumbnail", "thumb_url", "thumbnail_url", "title_img", "title_thumbnail");
                     videos.Add((title, $"https://vod.sooplive.com/player/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl));
                 }
+
+                if (data.GetArrayLength() < pageSize || newVodCount == 0) break;
             }
             return videos;
         }
@@ -1319,8 +1445,7 @@ public partial class MainWindow : Window
             channel.IsLive = isLive;
             _channels.Add(channel);
             SaveChannel(channel);
-            ChannelEmptyState.IsVisible = false;
-            ChannelScroller.IsVisible = true;
+            UpdateVisibleChannels();
             dialog.Close();
             _ = LoadChannelAppearanceAsync(channel, platformKey, channelId!, profileImageUrl, profileLookupSucceeded);
         };
@@ -1692,7 +1817,9 @@ public partial class MainWindow : Window
         ToolTip.SetTip(SortDirectionButton, _sortDescending ? "내림차순" : "오름차순");
     }
 
-    private string? GetSelectedPlatform() => PlatformTabs.SelectedItem is TabItem tab
+    private string? GetSelectedPlatform() => _isAllLibraryView
+        ? null
+        : PlatformTabs.SelectedItem is TabItem tab
         ? tab.Tag?.ToString() switch
         {
             "chzzk" => "치지직",
@@ -1705,28 +1832,37 @@ public partial class MainWindow : Window
     {
         if (CardsList is null) return;
 
+        UpdateVisibleChannels();
+
         var selectedPlatform = GetSelectedPlatform();
         var query = SearchBox?.Text?.Trim();
         var normalizedDateQuery = query?.Replace('/', '-').Replace('.', '-');
         var digitDateQuery = query is null ? "" : new string(query.Where(char.IsDigit).ToArray());
         var statusFilter = StatusFilter?.SelectedIndex ?? 0;
-        IEnumerable<MediaCard> filtered = _allCards.Where(card =>
+        var matchingCards = _allCards.Where(card =>
             _selectedChannel is not null &&
             (selectedPlatform is null || card.PlatformLabel == selectedPlatform) &&
             card.ChannelUrl == _selectedChannel.ChannelUrl &&
-            (statusFilter == 0 || card.WatchStatusLabel == (statusFilter switch
-            {
-                1 => "미시청",
-                2 => "시청중",
-                3 => "시청완료",
-                _ => ""
-            })) &&
             (string.IsNullOrWhiteSpace(query) ||
              card.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
              card.PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
                  .Contains(normalizedDateQuery!, StringComparison.OrdinalIgnoreCase) == true ||
              (digitDateQuery.Length >= 4 && card.PublishedAt?.ToLocalTime().ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture)
-                 .Contains(digitDateQuery, StringComparison.OrdinalIgnoreCase) == true)));
+                 .Contains(digitDateQuery, StringComparison.OrdinalIgnoreCase) == true)))
+            .ToArray();
+
+        ListTotalCountText.Text = $"총 {matchingCards.Length}개";
+        UnwatchedCountText.Text = matchingCards.Count(card => card.WatchStatusLabel == "미시청").ToString();
+        WatchingCountText.Text = matchingCards.Count(card => card.WatchStatusLabel == "시청중").ToString();
+        CompletedCountText.Text = matchingCards.Count(card => card.WatchStatusLabel == "시청완료").ToString();
+
+        IEnumerable<MediaCard> filtered = matchingCards.Where(card => statusFilter == 0 || card.WatchStatusLabel == (statusFilter switch
+        {
+            1 => "미시청",
+            2 => "시청중",
+            3 => "시청완료",
+            _ => ""
+        }));
         filtered = SortOrder?.SelectedIndex switch
         {
             1 => _sortDescending
@@ -1774,6 +1910,20 @@ public partial class MainWindow : Window
         ListViewButton.IsVisible = _selectedChannel is not null;
     }
 
+    private void UpdateVisibleChannels()
+    {
+        if (ChannelCards is null) return;
+
+        var selectedPlatform = GetSelectedPlatform();
+        _visibleChannels.Clear();
+        foreach (var channel in _channels.Where(channel => selectedPlatform is null ||
+                     (channel.Platform == "SOOP" ? "SOOP" : "치지직") == selectedPlatform))
+            _visibleChannels.Add(channel);
+
+        ChannelEmptyState.IsVisible = _visibleChannels.Count == 0;
+        ChannelScroller.IsVisible = _visibleChannels.Count > 0;
+    }
+
 }
 
 public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, IDisposable
@@ -1819,8 +1969,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         _lastPositionSeconds = Math.Max(0, lastPositionSeconds);
         _memo = memo ?? "";
         _updatedAt = updatedAt ?? DateTimeOffset.UtcNow;
-        if (_onlineUrl is not null && _localFilePath is not null)
-            RefreshSourceLabels();
+        RefreshSourceLabels();
     }
 
     public string Title => _title;
@@ -1839,7 +1988,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public bool HasLocalFilePath => !string.IsNullOrWhiteSpace(_localFilePath);
     public string? ChannelUrl { get; }
     public DateTimeOffset? PublishedAt => _publishedAt;
-    public string? ThumbnailUrl { get; }
+    public string? ThumbnailUrl { get; private set; }
     public string? ThumbnailPath { get; private set; }
     public bool ShowThumbnails
     {
@@ -1889,8 +2038,8 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     {
         _sourceTypeLabel = _onlineUrl is not null && _localFilePath is not null ? "링크+파일" :
             _onlineUrl is not null ? "링크" : "PC 파일";
-        _sourceLabel = _onlineUrl is not null && Uri.TryCreate(_onlineUrl, UriKind.Absolute, out var uri)
-            ? uri.Host
+        _sourceLabel = _onlineUrl is not null && Uri.TryCreate(_onlineUrl, UriKind.Absolute, out _)
+            ? _onlineUrl
             : _localFilePath is not null ? Path.GetFileName(_localFilePath) : "링크 없음";
         _availabilityLabel = _localFilePath is not null
             ? File.Exists(_localFilePath) ? "파일 확인됨" : "파일 확인 필요"
@@ -1918,6 +2067,13 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     }
 
     public void SetThumbnailPath(string path) => ThumbnailPath = path;
+
+    public void UpdateThumbnailUrl(string thumbnailUrl)
+    {
+        if (string.IsNullOrWhiteSpace(thumbnailUrl) || string.Equals(ThumbnailUrl, thumbnailUrl, StringComparison.OrdinalIgnoreCase)) return;
+        ThumbnailUrl = thumbnailUrl;
+        OnPropertyChanged(nameof(ThumbnailUrl));
+    }
 
     public bool IsSelected
     {
