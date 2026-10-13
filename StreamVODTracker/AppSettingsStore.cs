@@ -12,7 +12,7 @@ public sealed class AppSettingsStore
         Directory.CreateDirectory(settingsDirectory);
         _settingsPath = Path.Combine(settingsDirectory, "settings.ini");
         if (!File.Exists(_settingsPath))
-            File.WriteAllText(_settingsPath, "[Appearance]\nTheme=Light\n\n[Library]\nSortOrder=PublishedAt\n", new UTF8Encoding(false));
+            File.WriteAllText(_settingsPath, "[Appearance]\nTheme=Light\n\n[Library]\nSortOrder=PublishedAt\nSortDescending=True\n", new UTF8Encoding(false));
     }
 
     public bool LoadIsDarkTheme()
@@ -23,6 +23,10 @@ public sealed class AppSettingsStore
     public string LoadSortOrder() => LoadValue("Library", "SortOrder") ?? "PublishedAt";
 
     public void SaveSortOrder(string sortOrder) => SaveValue("Library", "SortOrder", sortOrder);
+
+    public bool LoadSortDescending() => !bool.TryParse(LoadValue("Library", "SortDescending"), out var value) || value;
+
+    public void SaveSortDescending(bool descending) => SaveValue("Library", "SortDescending", descending.ToString());
 
     public void SaveIsDarkTheme(bool isDark) => SaveValue("Appearance", "Theme", isDark ? "Dark" : "Light");
 

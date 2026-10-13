@@ -33,10 +33,13 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _channelStatusTimer = new() { Interval = TimeSpan.FromMinutes(2) };
     private bool _isDarkTheme;
     private bool _isLoadingSettings = true;
+    private bool _sortDescending = true;
 
     public MainWindow()
     {
         InitializeComponent();
+        _sortDescending = _settingsStore.LoadSortDescending();
+        UpdateSortDirectionButton();
         SortOrder.SelectedIndex = _settingsStore.LoadSortOrder() switch
         {
             "RecentAdded" => 1,
@@ -503,11 +506,9 @@ public partial class MainWindow : Window
     private void MediaCard_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (sender is not Border { DataContext: MediaCard selectedCard }) return;
-        if (e.Source is Button)
-        {
-            e.Handled = true;
-            return;
-        }
+        // Let interactive controls inside the card receive their normal click events.
+        // Marking the pointer press handled here prevents Button.Click from firing.
+        if (IsInsideButton(e.Source)) return;
 
         var modifiers = e.KeyModifiers;
         if (modifiers.HasFlag(KeyModifiers.Shift))
@@ -540,7 +541,7 @@ public partial class MainWindow : Window
     {
         if (!e.GetCurrentPoint(CardsArea).Properties.IsLeftButtonPressed ||
             e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Shift) ||
-            IsInsideScrollBar(e.Source) || e.Source is Button || e.Source is TextBlock { Cursor: not null }) return;
+            IsInsideScrollBar(e.Source) || IsInsideButton(e.Source) || e.Source is TextBlock { Cursor: not null }) return;
 
         var pressedCard = (e.Source as Control)?.DataContext as MediaCard;
         if (pressedCard is null)
@@ -559,6 +560,13 @@ public partial class MainWindow : Window
     {
         for (var visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
             if (visual is ScrollBar) return true;
+        return false;
+    }
+
+    private static bool IsInsideButton(object? source)
+    {
+        for (var visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
+            if (visual is Button) return true;
         return false;
     }
 
@@ -1669,6 +1677,21 @@ public partial class MainWindow : Window
         UpdateCards();
     }
 
+    private void SortDirectionButton_Click(object? sender, RoutedEventArgs e)
+    {
+        _sortDescending = !_sortDescending;
+        _settingsStore.SaveSortDescending(_sortDescending);
+        UpdateSortDirectionButton();
+        UpdateCards();
+    }
+
+    private void UpdateSortDirectionButton()
+    {
+        if (SortDirectionButton is null) return;
+        SortDirectionButton.Content = _sortDescending ? "↓" : "↑";
+        ToolTip.SetTip(SortDirectionButton, _sortDescending ? "내림차순" : "오름차순");
+    }
+
     private string? GetSelectedPlatform() => PlatformTabs.SelectedItem is TabItem tab
         ? tab.Tag?.ToString() switch
         {
@@ -1706,11 +1729,19 @@ public partial class MainWindow : Window
                  .Contains(digitDateQuery, StringComparison.OrdinalIgnoreCase) == true)));
         filtered = SortOrder?.SelectedIndex switch
         {
-            1 => filtered.OrderByDescending(card => _allCards.IndexOf(card)),
-            2 => filtered.OrderBy(card => card.Title, StringComparer.CurrentCultureIgnoreCase),
-            _ => filtered.OrderByDescending(card => card.PublishedAt.HasValue)
-                .ThenByDescending(card => card.PublishedAt)
-                .ThenBy(card => card.Title, StringComparer.CurrentCultureIgnoreCase)
+            1 => _sortDescending
+                ? filtered.OrderByDescending(card => _allCards.IndexOf(card))
+                : filtered.OrderBy(card => _allCards.IndexOf(card)),
+            2 => _sortDescending
+                ? filtered.OrderByDescending(card => card.Title, StringComparer.CurrentCultureIgnoreCase)
+                : filtered.OrderBy(card => card.Title, StringComparer.CurrentCultureIgnoreCase),
+            _ => _sortDescending
+                ? filtered.OrderByDescending(card => card.PublishedAt.HasValue)
+                    .ThenByDescending(card => card.PublishedAt)
+                    .ThenBy(card => card.Title, StringComparer.CurrentCultureIgnoreCase)
+                : filtered.OrderByDescending(card => card.PublishedAt.HasValue)
+                    .ThenBy(card => card.PublishedAt)
+                    .ThenBy(card => card.Title, StringComparer.CurrentCultureIgnoreCase)
         };
         _visibleCards.Clear();
         foreach (var card in filtered)

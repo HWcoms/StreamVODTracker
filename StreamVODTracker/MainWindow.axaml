@@ -118,7 +118,7 @@
                         <TabItem Header="SOOP" Tag="soop" />
                     </TabControl>
 
-                    <Grid Grid.Row="1" x:Name="SearchFiltersPanel" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="10" Margin="0,18,0,18">
+                    <Grid Grid.Row="1" x:Name="SearchFiltersPanel" ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="10" Margin="0,18,0,18">
                         <TextBox x:Name="SearchBox" PlaceholderText="영상 제목 혹은 날짜 검색" MinHeight="38" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" />
                         <ComboBox Grid.Column="1" x:Name="StatusFilter" SelectedIndex="0" MinWidth="128" VerticalContentAlignment="Center" SelectionChanged="StatusFilter_SelectionChanged">
                             <ComboBoxItem Content="모든 시청 상태" />
@@ -127,10 +127,13 @@
                             <ComboBoxItem Content="시청완료" />
                         </ComboBox>
                         <ComboBox Grid.Column="2" x:Name="SortOrder" SelectedIndex="0" MinWidth="128" VerticalContentAlignment="Center" SelectionChanged="SortOrder_SelectionChanged">
-                            <ComboBoxItem Content="게시일순" />
+                            <ComboBoxItem Content="방송일순" />
                             <ComboBoxItem Content="최근 추가순" />
                             <ComboBoxItem Content="제목순" />
                         </ComboBox>
+                        <Button Grid.Column="3" x:Name="SortDirectionButton" Content="↓" Width="40" Height="40" Padding="0"
+                                FontSize="22" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                Click="SortDirectionButton_Click" ToolTip.Tip="내림차순" />
                     </Grid>
 
                     <Grid Grid.Row="2" x:Name="LibraryPanel" ColumnDefinitions="230,*" ColumnSpacing="22">
