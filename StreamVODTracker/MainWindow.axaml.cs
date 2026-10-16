@@ -926,7 +926,17 @@ public partial class MainWindow : Window
     {
         if (sender is not TextBox input || input.DataContext is not MediaCard card) return;
         if (card.IsPositionSliderInteracting) return;
-        if (input.Tag is string part) card.SetLastPositionPart(part, input.Text ?? "");
+        var text = input.Text ?? "";
+        var digits = new string(text.Where(char.IsAsciiDigit).Take(2).ToArray());
+        var sanitized = text.Contains('-') || (text.Length > 0 && digits.Length == 0) ? "00" : digits;
+        if (!string.Equals(text, sanitized, StringComparison.Ordinal))
+        {
+            var caretIndex = input.CaretIndex;
+            input.Text = sanitized;
+            input.CaretIndex = Math.Min(caretIndex, sanitized.Length);
+            return;
+        }
+        if (input.Tag is string part) card.SetLastPositionPart(part, sanitized);
     }
 
     private void LastPositionInput_LostFocus(object? sender, RoutedEventArgs e)
@@ -2484,6 +2494,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
 
     public void SetLastPositionPart(string part, string value)
     {
+        if (value.Length > 0 && value[0] == '-') value = "00";
         if (value.Length > 2 || value.Any(character => !char.IsAsciiDigit(character))) return;
         switch (part)
         {
