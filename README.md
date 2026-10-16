@@ -17,8 +17,8 @@ A Windows desktop application for managing online VODs and offline Video Files f
 
 ### Running the Windows release
 
-The Windows x64 release requires the **.NET 10 Desktop Runtime**.  
-If it is not installed, download it from the [official .NET 10 downloads page](https://dotnet.microsoft.com/download/dotnet/10.0)
+The Windows x64 release requires the **.NET 10 Desktop Runtime (x64)**.  
+If it is not installed, download it from the [official .NET 10 downloads page](https://dotnet.microsoft.com/download/dotnet/10.0) under **.NET Desktop Runtime → Windows → x64**.
 
 ### Running from source
 
