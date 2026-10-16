@@ -1,4 +1,5 @@
 using System.Text;
+using System.Security.Cryptography;
 
 namespace StreamVODTracker;
 
@@ -12,7 +13,7 @@ public sealed class AppSettingsStore
         Directory.CreateDirectory(settingsDirectory);
         _settingsPath = Path.Combine(settingsDirectory, "settings.ini");
         if (!File.Exists(_settingsPath))
-            File.WriteAllText(_settingsPath, "[Appearance]\nTheme=Light\n\n[Library]\nSortOrder=PublishedAt\nSortDescending=True\n", new UTF8Encoding(false));
+            File.WriteAllText(_settingsPath, "[Appearance]\nTheme=Light\n\n[Library]\nSortOrder=PublishedAt\nSortDescending=True\n\n[Playback]\nPlayerPath=\nPlayerArguments={file}\n", new UTF8Encoding(false));
     }
 
     public bool LoadIsDarkTheme()
@@ -29,6 +30,35 @@ public sealed class AppSettingsStore
     public void SaveSortDescending(bool descending) => SaveValue("Library", "SortDescending", descending.ToString());
 
     public void SaveIsDarkTheme(bool isDark) => SaveValue("Appearance", "Theme", isDark ? "Dark" : "Light");
+
+    public string LoadVideoPlayerPath() => LoadValue("Playback", "PlayerPath") ?? "";
+
+    public void SaveVideoPlayerPath(string path) => SaveValue("Playback", "PlayerPath", path);
+
+    public string LoadVideoPlayerArguments() => LoadValue("Playback", "PlayerArguments") ?? "{file}";
+
+    public void SaveVideoPlayerArguments(string arguments) => SaveValue("Playback", "PlayerArguments", arguments);
+
+    public string LoadVideoPlayerArguments(string playerPath)
+    {
+        return TryLoadVideoPlayerArguments(playerPath, out var arguments) ? arguments : LoadVideoPlayerArguments();
+    }
+
+    public bool TryLoadVideoPlayerArguments(string playerPath, out string arguments)
+    {
+        var value = LoadValue("Playback", GetPlayerArgumentsKey(playerPath));
+        arguments = value ?? "";
+        return value is not null;
+    }
+
+    public void SaveVideoPlayerArguments(string playerPath, string arguments) =>
+        SaveValue("Playback", GetPlayerArgumentsKey(playerPath), arguments);
+
+    private static string GetPlayerArgumentsKey(string playerPath)
+    {
+        var normalized = string.IsNullOrWhiteSpace(playerPath) ? "windows-default" : Path.GetFullPath(playerPath).ToUpperInvariant();
+        return "PlayerArguments_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(normalized)))[..16];
+    }
 
     private string? LoadValue(string sectionName, string key)
     {
