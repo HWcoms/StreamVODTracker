@@ -1,7 +1,5 @@
 using System.Globalization;
-using System.IO.Compression;
 using System.Text;
-using System.Xml;
 
 namespace StreamVODTracker;
 
@@ -53,18 +51,6 @@ internal static class LibraryTransfer
         return result;
     }
 
-    public static void ExportXlsx(string path, IEnumerable<SavedChannelData> channels)
-    {
-        var all = Flatten(channels).ToList();
-        using var file = new FileStream(path, FileMode.Create, FileAccess.ReadWrite);
-        using var archive = new ZipArchive(file, ZipArchiveMode.Create);
-        WriteXml(archive, "[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/><Override PartName=\"/xl/worksheets/sheet2.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/></Types>");
-        WriteXml(archive, "_rels/.rels", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>");
-        WriteXml(archive, "xl/workbook.xml", "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"치지직\" sheetId=\"1\" r:id=\"rId1\"/><sheet name=\"soop\" sheetId=\"2\" r:id=\"rId2\"/></sheets></workbook>");
-        WriteXml(archive, "xl/_rels/workbook.xml.rels", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet2.xml\"/></Relationships>");
-        WriteSheet(archive, "xl/worksheets/sheet1.xml", all.Where(row => row.Platform == "CHZZK"));
-        WriteSheet(archive, "xl/worksheets/sheet2.xml", all.Where(row => row.Platform == "SOOP"));
-    }
 
     public static string GetVodId(string platform, string url, string file, string title)
     {
@@ -89,31 +75,7 @@ internal static class LibraryTransfer
         WriteRow(writer, [row.Platform, row.ChannelId, row.ChannelName, row.ChannelUrl, row.VodId, row.Title, row.Url,
             row.PublishedAt?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? "", row.WatchStatus, row.LastPositionSeconds.ToString(CultureInfo.InvariantCulture), row.LocalFilePath, row.Memo, row.UpdatedAt]);
 
-    private static void WriteSheet(ZipArchive archive, string name, IEnumerable<TransferMedia> data)
-    {
-        var entry = archive.CreateEntry(name);
-        using var writer = XmlWriter.Create(entry.Open(), new XmlWriterSettings { Encoding = new UTF8Encoding(false), CloseOutput = true });
-        writer.WriteStartElement("worksheet", "http://schemas.openxmlformats.org/spreadsheetml/2006/main"); writer.WriteStartElement("sheetData");
-        WriteExcelRow(writer, 1, Columns);
-        var index = 2;
-        foreach (var row in data) WriteExcelRow(writer, index++, [row.Platform, row.ChannelId, row.ChannelName, row.ChannelUrl, row.VodId, row.Title, row.Url,
-            row.PublishedAt?.ToString("O", CultureInfo.InvariantCulture) ?? "", row.WatchStatus, row.LastPositionSeconds.ToString(CultureInfo.InvariantCulture), row.LocalFilePath, row.Memo, row.UpdatedAt]);
-        writer.WriteEndElement(); writer.WriteEndElement();
-    }
 
-    private static void WriteExcelRow(XmlWriter writer, int rowIndex, IEnumerable<string> values)
-    {
-        writer.WriteStartElement("row"); writer.WriteAttributeString("r", rowIndex.ToString(CultureInfo.InvariantCulture));
-        var col = 0;
-        foreach (var value in values)
-        {
-            writer.WriteStartElement("c"); writer.WriteAttributeString("r", ColumnName(++col) + rowIndex); writer.WriteAttributeString("t", "inlineStr");
-            writer.WriteStartElement("is"); writer.WriteStartElement("t"); writer.WriteAttributeString("xml", "space", "http://www.w3.org/XML/1998/namespace", "preserve"); writer.WriteString(value); writer.WriteEndElement(); writer.WriteEndElement(); writer.WriteEndElement();
-        }
-        writer.WriteEndElement();
-    }
-    private static string ColumnName(int column) { var name = ""; while (column > 0) { column--; name = (char)('A' + column % 26) + name; column /= 26; } return name; }
-    private static void WriteXml(ZipArchive archive, string name, string xml) { using var writer = new StreamWriter(archive.CreateEntry(name).Open(), new UTF8Encoding(false)); writer.Write(xml); }
     private static void WriteRow(TextWriter writer, IEnumerable<string> fields) => writer.WriteLine(string.Join(',', fields.Select(value => value.IndexOfAny([',', '"', '\r', '\n']) >= 0 ? $"\"{value.Replace("\"", "\"\"")}\"" : value)));
     private static List<List<string>> ReadCsv(string text)
     {

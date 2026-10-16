@@ -20,6 +20,12 @@ public partial class MainWindow : Window
 {
     private readonly ObservableCollection<MediaCard> _allCards = [];
     private readonly ObservableCollection<MediaCard> _visibleCards = [];
+    private readonly List<MediaCard> _filteredCards = [];
+    private readonly Dictionary<string, int> _soopNextPageByChannel = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _soopHasMoreByChannel = new(StringComparer.OrdinalIgnoreCase);
+    private const int InitialCardDisplayLimit = 120;
+    private const int CardDisplayBatchSize = 120;
+    private int _cardDisplayLimit = InitialCardDisplayLimit;
     private readonly ObservableCollection<ChannelEntry> _channels = [];
     private readonly ObservableCollection<ChannelEntry> _visibleChannels = [];
     private readonly AppSettingsStore _settingsStore = new(AppContext.BaseDirectory);
@@ -34,10 +40,12 @@ public partial class MainWindow : Window
     private bool _isListView;
     private bool _showThumbnails = true;
     private readonly DispatcherTimer _channelStatusTimer = new() { Interval = TimeSpan.FromMinutes(2) };
+    private readonly DispatcherTimer _searchDurationRefreshTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private bool _isDarkTheme;
     private bool _isLoadingSettings = true;
     private bool _sortDescending = true;
     private bool _isAllLibraryView;
+    private bool _isLoadingMoreAtScrollEnd;
 
     public MainWindow()
     {
@@ -63,13 +71,17 @@ public partial class MainWindow : Window
         ChannelCards.ItemsSource = _visibleChannels;
         LicenseEntries.ItemsSource = BuildLicenseEntries();
         LoadLocalDatabase();
-        PlatformTabs.SelectedIndex = 0;
+        _isAllLibraryView = true;
+        PlatformTabs.SelectedIndex = -1;
+        UpdateNavigationSelection("all");
         ApplyTheme(_settingsStore.LoadIsDarkTheme());
+        _searchDurationRefreshTimer.Tick += SearchDurationRefreshTimer_Tick;
         _channelStatusTimer.Tick += ChannelStatusTimer_Tick;
         _channelStatusTimer.Start();
         Closed += (_, _) =>
         {
             _channelStatusTimer.Stop();
+            _searchDurationRefreshTimer.Stop();
             foreach (var channel in _channels) channel.Dispose();
             foreach (var card in _allCards) card.Dispose();
         };
@@ -307,8 +319,10 @@ public partial class MainWindow : Window
 
         if (section == "all")
         {
+            UpdateNavigationSelection(section);
             _isAllLibraryView = true;
             _selectedChannel = null;
+            _cardDisplayLimit = InitialCardDisplayLimit;
             foreach (var channel in _channels) channel.IsSelected = false;
             PlatformTabs.SelectedIndex = -1;
             PlatformTabs.IsVisible = true;
@@ -324,6 +338,7 @@ public partial class MainWindow : Window
 
         if (section == "licenses")
         {
+            UpdateNavigationSelection(section);
             _isAllLibraryView = false;
             PlatformTabs.SelectedIndex = -1;
             PlatformTabs.IsVisible = false;
@@ -336,9 +351,20 @@ public partial class MainWindow : Window
             return;
         }
 
+        UpdateNavigationSelection(section);
         _isAllLibraryView = false;
         PlatformTabs.SelectedIndex = section == "soop" ? 1 : 0;
+        UpdateCards();
     }
+
+    private void UpdateNavigationSelection(string section)
+    {
+        AllLibraryButton.Classes.Set("selected", section == "all");
+        ChzzkNavigationButton.Classes.Set("selected", section == "chzzk");
+        SoopNavigationButton.Classes.Set("selected", section == "soop");
+        LicensesNavigationButton.Classes.Set("selected", section == "licenses");
+    }
+
     private void PlatformTabs_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (PageTitle is null) return;
@@ -350,11 +376,13 @@ public partial class MainWindow : Window
         if (PlatformTabs.SelectedItem is not TabItem tab) return;
 
         var section = tab.Tag?.ToString();
+        if (section is "chzzk" or "soop") UpdateNavigationSelection(section);
         if (_selectedChannel is not null &&
             ((section == "soop") != (_selectedChannel.Platform == "SOOP")))
         {
             _selectedChannel.IsSelected = false;
             _selectedChannel = null;
+            _cardDisplayLimit = InitialCardDisplayLimit;
         }
         if (PlatformTabs is not null) PlatformTabs.IsVisible = true;
         if (LibraryPanel is not null) LibraryPanel.IsVisible = true;
@@ -499,6 +527,7 @@ public partial class MainWindow : Window
     {
         if (sender is not Border { DataContext: ChannelEntry selectedChannel }) return;
         _selectedChannel = selectedChannel;
+        _cardDisplayLimit = InitialCardDisplayLimit;
         foreach (var channel in _channels) channel.IsSelected = ReferenceEquals(channel, selectedChannel);
         PlatformTabs.SelectedIndex = selectedChannel.Platform == "SOOP" ? 1 : 0;
         UpdateCards();
@@ -511,6 +540,7 @@ public partial class MainWindow : Window
             !Uri.TryCreate(channel.ChannelUrl, UriKind.Absolute, out var uri)) return;
         e.Handled = true;
         _selectedChannel = channel;
+        _cardDisplayLimit = InitialCardDisplayLimit;
         foreach (var item in _channels) item.IsSelected = ReferenceEquals(item, channel);
         PlatformTabs.SelectedIndex = channel.Platform == "SOOP" ? 1 : 0;
         UpdateCards();
@@ -1096,6 +1126,20 @@ public partial class MainWindow : Window
     {
         var onlineUrl = card.OnlineUrl;
         var localPath = card.LocalFilePath;
+        if (card.PlatformLabel == "SOOP" && !string.IsNullOrWhiteSpace(onlineUrl))
+        {
+            var duration = await FetchSoopVodDurationAsync(onlineUrl);
+            if (duration is > 0 && string.Equals(card.OnlineUrl, onlineUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                card.SetDuration(duration);
+                if (card.ChannelUrl is not null && _channels.FirstOrDefault(item => item.ChannelUrl == card.ChannelUrl) is { } owner)
+                    SaveChannel(owner);
+                return;
+            }
+            if (string.Equals(card.LocalFilePath, localPath, StringComparison.OrdinalIgnoreCase) && card.HasLocalFilePath)
+                await DetectLocalDurationAsync(card);
+            return;
+        }
         if (!string.IsNullOrWhiteSpace(onlineUrl) && IsHttpUrl(onlineUrl) && card.ChannelUrl is not null &&
             _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
         {
@@ -1103,9 +1147,7 @@ public partial class MainWindow : Window
             {
                 var videos = await FetchChannelVideosAsync(channel);
                 var match = videos.FirstOrDefault(video => string.Equals(video.Url.TrimEnd('/'), onlineUrl!.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
-                var duration = card.PlatformLabel == "SOOP"
-                    ? await FetchSoopVodDurationAsync(onlineUrl)
-                    : match.DurationSeconds;
+                var duration = match.DurationSeconds;
                 if (duration is > 0 && string.Equals(card.OnlineUrl, onlineUrl, StringComparison.OrdinalIgnoreCase))
                 {
                     card.SetDuration(duration);
@@ -1141,24 +1183,38 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task RefreshChannelDurationsAsync(ChannelEntry channel)
+    private Task RefreshChannelDurationsAsync(ChannelEntry channel)
+        => RefreshChannelDurationsAsync(channel, null);
+
+    private async Task RefreshChannelDurationsAsync(ChannelEntry channel, IReadOnlyCollection<MediaCard>? cardsToRefresh)
     {
         if (!_durationRefreshInProgress.Add(channel.ChannelUrl)) return;
         try
         {
-            var videos = await FetchChannelVideosAsync(channel);
-            var channelCards = _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray();
-            await Task.WhenAll(channelCards.Select(async card =>
+            var channelCards = cardsToRefresh?.ToArray() ?? _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray();
+            if (channel.Platform == "SOOP")
             {
-                var match = videos.FirstOrDefault(video => string.Equals(video.Url.TrimEnd('/'), card.OnlineUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
-                var duration = card.PlatformLabel == "SOOP"
-                    ? await FetchSoopVodDurationAsync(card.OnlineUrl)
-                    : match.DurationSeconds;
-                if (duration is > 0)
-                    card.SetDuration(duration);
-                else if (card.HasLocalFilePath)
-                    await DetectLocalDurationAsync(card);
-            }));
+                await Task.WhenAll(channelCards.Select(async card =>
+                {
+                    var duration = await FetchSoopVodDurationAsync(card.OnlineUrl);
+                    if (duration is > 0)
+                        card.SetDuration(duration);
+                    else if (card.HasLocalFilePath)
+                        await DetectLocalDurationAsync(card);
+                }));
+            }
+            else
+            {
+                var videos = await FetchChannelVideosAsync(channel);
+                await Task.WhenAll(channelCards.Select(async card =>
+                {
+                    var match = videos.FirstOrDefault(video => string.Equals(video.Url.TrimEnd('/'), card.OnlineUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+                    if (match.DurationSeconds is > 0)
+                        card.SetDuration(match.DurationSeconds);
+                    else if (card.HasLocalFilePath)
+                        await DetectLocalDurationAsync(card);
+                }));
+            }
             SaveChannel(channel);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
@@ -1351,6 +1407,12 @@ public partial class MainWindow : Window
         {
             var channel = _selectedChannel;
             var foundVideos = await FetchChannelVideosAsync(channel);
+            if (channel.Platform == "SOOP")
+            {
+                _soopNextPageByChannel[channel.ChannelUrl] = 2;
+                if (foundVideos.Count >= 60) _soopHasMoreByChannel.Add(channel.ChannelUrl);
+                else _soopHasMoreByChannel.Remove(channel.ChannelUrl);
+            }
             var addedCount = 0;
             foreach (var video in foundVideos)
             {
@@ -1358,21 +1420,21 @@ public partial class MainWindow : Window
                     string.Equals(card.OnlineUrl?.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
                 if (existingCard is not null)
                 {
-                    var duration = existingCard.PlatformLabel == "SOOP"
-                        ? await FetchSoopVodDurationAsync(existingCard.OnlineUrl)
-                        : video.DurationSeconds;
-                    existingCard.SetDuration(duration);
+                    if (existingCard.PlatformLabel == "SOOP")
+                        _ = RefreshCardDurationAsync(existingCard);
+                    else
+                        existingCard.SetDuration(video.DurationSeconds);
                     _ = RefreshCardThumbnailAsync(existingCard, video.ThumbnailUrl);
-                    if (duration is null && existingCard.HasLocalFilePath)
+                    if (!existingCard.HasKnownDuration && existingCard.HasLocalFilePath)
                         _ = DetectLocalDurationAsync(existingCard);
                     continue;
                 }
                 var card = new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
                     "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl,
                     durationSeconds: video.DurationSeconds);
-                if (card.PlatformLabel == "SOOP")
-                    card.SetDuration(await FetchSoopVodDurationAsync(card.OnlineUrl));
                 _allCards.Add(card);
+                if (card.PlatformLabel == "SOOP" && !card.HasKnownDuration)
+                    _ = RefreshCardDurationAsync(card);
                 _ = RefreshCardThumbnailAsync(card, video.ThumbnailUrl);
                 addedCount++;
             }
@@ -1393,7 +1455,50 @@ public partial class MainWindow : Window
         }
     }
 
-    private static async Task<List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl, double? DurationSeconds)>> FetchChannelVideosAsync(ChannelEntry channel)
+    private async void CardsScroller_ScrollChanged(object? sender, ScrollChangedEventArgs e)
+    {
+        if (sender is not ScrollViewer scroller || _isLoadingMoreAtScrollEnd) return;
+        var remaining = scroller.Extent.Height - scroller.Offset.Y - scroller.Viewport.Height;
+        if (remaining > 160) return;
+        if (_visibleCards.Count < _filteredCards.Count)
+        {
+            _cardDisplayLimit += CardDisplayBatchSize;
+            UpdateCards();
+            return;
+        }
+        var channel = _selectedChannel;
+        if (channel is null || channel.Platform != "SOOP" || !_soopHasMoreByChannel.Contains(channel.ChannelUrl)) return;
+        _isLoadingMoreAtScrollEnd = true;
+        try
+        {
+            var page = _soopNextPageByChannel.GetValueOrDefault(channel.ChannelUrl, 2);
+            var videos = await FetchChannelVideosAsync(channel, page);
+            foreach (var video in videos)
+            {
+                if (_allCards.Any(card => string.Equals(card.OnlineUrl?.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))) continue;
+                var card = new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
+                    "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl,
+                    durationSeconds: video.DurationSeconds);
+                _allCards.Add(card);
+                if (!card.HasKnownDuration) _ = RefreshCardDurationAsync(card);
+                _ = RefreshCardThumbnailAsync(card, video.ThumbnailUrl);
+            }
+            _soopNextPageByChannel[channel.ChannelUrl] = page + 1;
+            if (videos.Count < 60) _soopHasMoreByChannel.Remove(channel.ChannelUrl);
+            SaveChannel(channel);
+            UpdateCards();
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            // Scrolling to the end again retries a failed page request.
+        }
+        finally
+        {
+            _isLoadingMoreAtScrollEnd = false;
+        }
+    }
+
+    private static async Task<List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl, double? DurationSeconds)>> FetchChannelVideosAsync(ChannelEntry channel, int soopPage = 1)
     {
         if (!Uri.TryCreate(channel.ChannelUrl, UriKind.Absolute, out var channelUri) ||
             !TryGetPlatformChannelId(channel.Platform == "SOOP" ? "SOOP" : "CHZZK", channelUri, out var channelId))
@@ -1406,27 +1511,20 @@ public partial class MainWindow : Window
         {
             const int pageSize = 60;
             var seenVodIds = new HashSet<string>(StringComparer.Ordinal);
-            for (var page = 1; page <= 1000; page++)
+            var page = Math.Max(1, soopPage);
+            var url = $"https://chapi.sooplive.com/api/{Uri.EscapeDataString(channelId)}/vods/all/streamer?page={page}&per_page={pageSize}&orderby=reg_date";
+            using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url));
+            if (!json.RootElement.TryGetProperty("data", out var data) || data.ValueKind != System.Text.Json.JsonValueKind.Array)
+                return videos;
+            foreach (var item in data.EnumerateArray())
             {
-                var url = $"https://chapi.sooplive.com/api/{Uri.EscapeDataString(channelId)}/vods/all/streamer?page={page}&per_page={pageSize}&orderby=reg_date";
-                using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url));
-                if (!json.RootElement.TryGetProperty("data", out var data) ||
-                    data.ValueKind != System.Text.Json.JsonValueKind.Array || data.GetArrayLength() == 0) break;
-
-                var newVodCount = 0;
-                foreach (var item in data.EnumerateArray())
-                {
-                    var id = item.TryGetProperty("title_no", out var titleNo) ? titleNo.ToString() : null;
-                    var title = item.TryGetProperty("title_name", out var titleName) ? titleName.GetString() : null;
-                    if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(title) || !seenVodIds.Add(id)) continue;
-                    newVodCount++;
-                    var dateValue = item.TryGetProperty("reg_date", out var regDate) ? regDate.ToString() : null;
-                    var thumbnailUrl = GetFirstString(item, "thumb", "thumbnail", "thumb_url", "thumbnail_url", "title_img", "title_thumbnail");
-                    videos.Add((title, $"https://vod.sooplive.com/player/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl,
-                        GetDurationSeconds(item, "total_file_duration", "file_duration", "duration")));
-                }
-
-                if (data.GetArrayLength() < pageSize || newVodCount == 0) break;
+                var id = item.TryGetProperty("title_no", out var titleNo) ? titleNo.ToString() : null;
+                var title = item.TryGetProperty("title_name", out var titleName) ? titleName.GetString() : null;
+                if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(title) || !seenVodIds.Add(id)) continue;
+                var dateValue = item.TryGetProperty("reg_date", out var regDate) ? regDate.ToString() : null;
+                var thumbnailUrl = GetFirstString(item, "thumb", "thumbnail", "thumb_url", "thumbnail_url", "title_img", "title_thumbnail");
+                videos.Add((title, $"https://vod.sooplive.com/player/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl,
+                    GetDurationSeconds(item, "total_file_duration", "file_duration", "duration")));
             }
             return videos;
         }
@@ -1987,33 +2085,25 @@ public partial class MainWindow : Window
         await settings.ShowDialog(this);
     }
 
-    private async void ExportCsv_Click(object? sender, RoutedEventArgs e) => await ExportLibraryAsync("csv");
-
-    private async void ExportXlsx_Click(object? sender, RoutedEventArgs e) => await ExportLibraryAsync("xlsx");
-
-    private async Task ExportLibraryAsync(string format)
+    private async void ExportCsv_Click(object? sender, RoutedEventArgs e)
     {
-        var isExcel = format == "xlsx";
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
-            Title = isExcel ? "Excel 라이브러리 내보내기" : "CSV 라이브러리 내보내기",
-            SuggestedFileName = $"vod-library.{format}",
-            FileTypeChoices = [new FilePickerFileType(isExcel ? "Excel 통합 문서" : "CSV 파일") { Patterns = [$"*.{format}"] }]
+            Title = "CSV library export",
+            SuggestedFileName = "vod-library.csv",
+            FileTypeChoices = [new FilePickerFileType("CSV file") { Patterns = ["*.csv"] }]
         });
         if (file is null) return;
         try
         {
-            var saved = _localDatabase.LoadAll();
-            if (isExcel) LibraryTransfer.ExportXlsx(file.Path.LocalPath, saved);
-            else LibraryTransfer.ExportCsv(file.Path.LocalPath, saved);
-            await ShowTransferMessageAsync("내보내기 완료", "라이브러리를 파일로 내보냈습니다.");
+            LibraryTransfer.ExportCsv(file.Path.LocalPath, _localDatabase.LoadAll());
+            await ShowTransferMessageAsync("Export complete", "The library was exported as CSV.");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {
-            await ShowTransferMessageAsync("내보내기 실패", exception.Message);
+            await ShowTransferMessageAsync("Export failed", exception.Message);
         }
     }
-
     private async void ImportCsv_Click(object? sender, RoutedEventArgs e)
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -2119,7 +2209,19 @@ public partial class MainWindow : Window
         new("MicroCom.Runtime", "MIT · 0.11.4", "COM interop support library.", "고지 포함", "https://github.com/kekekeks/MicroCom", "kekekeks", "https://github.com/kekekeks", "https://github.com/kekekeks/MicroCom/blob/master/LICENSE"),
         new("Tmds.DBus.Protocol", "MIT · 0.92.0", "D-Bus protocol library.", "고지 포함", "https://github.com/tmds/Tmds.DBus", "Tom Deseyn", "https://github.com/tmds", "https://github.com/tmds/Tmds.DBus/blob/main/LICENSE")
     ];
-    private void SearchBox_TextChanged(object? sender, TextChangedEventArgs e) => UpdateCards();
+    private void SearchBox_TextChanged(object? sender, TextChangedEventArgs e)
+    {
+        UpdateCards();
+        if (_isLoadingSettings) return;
+        _searchDurationRefreshTimer.Stop();
+        _searchDurationRefreshTimer.Start();
+    }
+
+    private void SearchDurationRefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        _searchDurationRefreshTimer.Stop();
+        RestartVisibleCardDurations();
+    }
 
     private void StatusFilter_SelectionChanged(object? sender, SelectionChangedEventArgs e) => UpdateCards();
 
@@ -2131,6 +2233,8 @@ public partial class MainWindow : Window
             _settingsStore.SaveSortOrder(value);
         }
         UpdateCards();
+        ResetCardScrollPosition();
+        if (!_isLoadingSettings) RestartVisibleCardDurations();
     }
 
     private void SortDirectionButton_Click(object? sender, RoutedEventArgs e)
@@ -2139,6 +2243,39 @@ public partial class MainWindow : Window
         _settingsStore.SaveSortDescending(_sortDescending);
         UpdateSortDirectionButton();
         UpdateCards();
+        ResetCardScrollPosition();
+        RestartVisibleCardDurations();
+    }
+
+    private void ResetCardScrollPosition()
+    {
+        if (CardsScroller is null || CardsListScroller is null) return;
+        CardsScroller.Offset = new Vector(CardsScroller.Offset.X, 0);
+        CardsListScroller.Offset = new Vector(CardsListScroller.Offset.X, 0);
+    }
+
+    private void RestartVisibleCardDurations()
+    {
+        var cards = _visibleCards.ToArray();
+        if (cards.Length == 0) return;
+        foreach (var card in cards) card.SetDuration(null);
+
+        foreach (var group in cards.Where(card => !string.IsNullOrWhiteSpace(card.ChannelUrl)).GroupBy(card => card.ChannelUrl!))
+        {
+            var channel = _channels.FirstOrDefault(item => item.ChannelUrl == group.Key);
+            if (channel is null)
+            {
+                foreach (var card in group) _ = RefreshCardDurationAsync(card);
+                continue;
+            }
+            _ = RefreshChannelDurationsAsync(channel, group.ToArray());
+        }
+
+        foreach (var card in cards.Where(card => string.IsNullOrWhiteSpace(card.ChannelUrl)))
+        {
+            if (card.HasLocalFilePath) _ = DetectLocalDurationAsync(card);
+            else _ = RefreshCardDurationAsync(card);
+        }
     }
 
     private void UpdateSortDirectionButton()
@@ -2171,9 +2308,9 @@ public partial class MainWindow : Window
         var digitDateQuery = query is null ? "" : new string(query.Where(char.IsDigit).ToArray());
         var statusFilter = StatusFilter?.SelectedIndex ?? 0;
         var matchingCards = _allCards.Where(card =>
-            _selectedChannel is not null &&
+            (_isAllLibraryView || _selectedChannel is not null) &&
             (selectedPlatform is null || card.PlatformLabel == selectedPlatform) &&
-            card.ChannelUrl == _selectedChannel.ChannelUrl &&
+            (_isAllLibraryView || card.ChannelUrl == _selectedChannel!.ChannelUrl) &&
             (string.IsNullOrWhiteSpace(query) ||
              card.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
              card.PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
@@ -2210,12 +2347,14 @@ public partial class MainWindow : Window
                     .ThenBy(card => card.PublishedAt)
                     .ThenBy(card => card.Title, StringComparer.CurrentCultureIgnoreCase)
         };
+        _filteredCards.Clear();
+        _filteredCards.AddRange(filtered);
         _visibleCards.Clear();
-        foreach (var card in filtered)
+        foreach (var card in _filteredCards.Take(_cardDisplayLimit))
         {
             _visibleCards.Add(card);
         }
-        var visibleCards = _visibleCards.ToHashSet();
+        var visibleCards = _filteredCards.ToHashSet();
         foreach (var card in _allCards.Where(card => card.IsSelected && !visibleCards.Contains(card)))
             card.IsSelected = false;
         if (_selectionAnchor is not null && !visibleCards.Contains(_selectionAnchor))
