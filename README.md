@@ -14,7 +14,15 @@ A Windows desktop application for managing online VODs and offline Video Files f
 
 ## Run
 
-Requires the .NET 10 SDK. From the repository root:
+### Running the Windows release
+
+The Windows x64 release requires the **.NET 10 Desktop Runtime (x64)**. 
+If it is not installed, download it from the [official .NET 10 downloads page](https://dotnet.microsoft.com/download/dotnet/10.0) under **.NET Desktop Runtime → Windows → x64**. 
+The Desktop Runtime includes the .NET runtime required by this application.
+
+### Running from source
+
+Building and running from the repository requires the **.NET 10 SDK**. From the repository root:
 
 ```powershell
 dotnet run --project StreamVODTracker/StreamVODTracker.csproj
