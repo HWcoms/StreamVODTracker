@@ -81,7 +81,7 @@
                 <Border Grid.Row="3" BorderBrush="#303342" BorderThickness="0,1,0,0" Padding="0,18,0,0">
                     <StackPanel Spacing="8">
                     <Button x:Name="ThemeToggleButton" Content="☀" Width="40" Height="40" Padding="0" Background="{DynamicResource ThemeButtonBackgroundBrush}" Foreground="{DynamicResource ThemeButtonForegroundBrush}" BorderBrush="{DynamicResource MainBorderBrush}" BorderThickness="1" CornerRadius="10" FontSize="24" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="ThemeToggle_Click" ToolTip.Tip="테마 전환" />
-                    <Button Content="⚙  플랫폼 API 설정" Classes="nav" Click="OpenSettings_Click" />
+                    <Button Content="⚙  설정" Classes="nav" Click="OpenSettings_Click" />
                         <TextBlock Text="서버 연결" Foreground="#85899B" FontSize="11" />
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <Ellipse Width="8" Height="8" Fill="#E3A94B" VerticalAlignment="Center" />
@@ -91,7 +91,7 @@
                             <Button x:Name="LicensesNavigationButton" Classes="nav" Tag="licenses" Click="Navigation_Click">
                                 <StackPanel Orientation="Horizontal" Spacing="12">
                                     <TextBlock Text="ⓘ" />
-                                    <TextBlock Text="라이선스 및 오픈소스 고지" />
+                                    <TextBlock Text="라이선스 및 오픈소스 고지" TextWrapping="Wrap" MaxWidth="145" />
                                 </StackPanel>
                             </Button>
                         </Border>
@@ -130,13 +130,32 @@
 
                     <Grid Grid.Row="2" x:Name="LibraryPanel" ColumnDefinitions="210,*" ColumnSpacing="14">
                         <Border Background="{DynamicResource InsetSurfaceBrush}" CornerRadius="12" Padding="16">
-                            <Grid RowDefinitions="Auto,Auto,*">
-                                <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,12">
+                            <Grid RowDefinitions="Auto,Auto,Auto,*">
+                                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6" Margin="0,0,0,12">
                                     <TextBlock Text="채널" FontSize="14" FontWeight="Bold" Foreground="{DynamicResource PrimaryTextBrush}" VerticalAlignment="Center" />
-                                    <Button Grid.Column="1" Content="채널 추가" MinWidth="82" Height="32" Padding="8,4" Click="AddChannel_Click" ToolTip.Tip="채널 ID 또는 주소로 채널 추가" />
+                                    <Button Grid.Column="1" x:Name="DeleteChannelsButton" Classes="channel-delete" Width="34" Height="32" Padding="0"
+                                            IsVisible="False" Click="DeleteSelectedChannels_Click" ToolTip.Tip="선택한 채널 삭제">
+                                        <Canvas Width="20" Height="21">
+                                            <Border Canvas.Left="5" Canvas.Top="2" Width="10" Height="2" Background="#D84040" CornerRadius="1" />
+                                            <Border Canvas.Left="3" Canvas.Top="5" Width="14" Height="2" Background="#D84040" CornerRadius="1" />
+                                            <Border Canvas.Left="5" Canvas.Top="7" Width="10" Height="12" BorderBrush="#D84040" BorderThickness="1.4" CornerRadius="1" />
+                                            <Border Canvas.Left="8" Canvas.Top="9" Width="1.2" Height="7" Background="#D84040" />
+                                            <Border Canvas.Left="11" Canvas.Top="9" Width="1.2" Height="7" Background="#D84040" />
+                                        </Canvas>
+                                    </Button>
+                                    <Button Grid.Column="2" Content="+" Width="34" Height="32" Padding="0"
+                                            Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
+                                            Foreground="{DynamicResource PrimaryTextBrush}" FontSize="24" FontWeight="Regular"
+                                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                            Click="AddChannel_Click" ToolTip.Tip="채널 추가" />
                                 </Grid>
                                 <TextBlock Grid.Row="1" Text="치지직과 SOOP 채널을 추가하면 여기에 목록이 표시됩니다." TextWrapping="Wrap" FontSize="12" Foreground="#898D9B" Margin="0,0,0,12" />
-                                <Grid Grid.Row="2">
+                                <Border Grid.Row="2" x:Name="ShowAllChannelsCard" Classes="channel-aggregate" Margin="0,0,0,10"
+                                        PointerPressed="ShowAllChannels_PointerPressed">
+                                    <TextBlock Text="모아 보기" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                               FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                </Border>
+                                <Grid Grid.Row="3" x:Name="ChannelPanel" Background="Transparent" PointerPressed="ChannelPanel_PointerPressed">
                                     <Border x:Name="ChannelEmptyState" BorderBrush="#E4E5EB" BorderThickness="0,1,0,0" Padding="0,12,0,0">
                                         <TextBlock Text="등록된 채널이 없습니다." FontSize="12" Foreground="#A0A3AF" />
                                     </Border>
@@ -145,7 +164,8 @@
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate x:DataType="local:ChannelEntry">
                                                             <Border Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="9"
-                                                            Padding="11" Margin="0,0,0,8" PointerPressed="ChannelCard_PointerPressed">
+                                                            Padding="11" Margin="0,0,0,8" PointerPressed="ChannelCard_PointerPressed"
+                                                            Loaded="ChannelCard_Loaded" Unloaded="ChannelCard_Unloaded">
                                                         <Grid ColumnDefinitions="58,*" ColumnSpacing="10">
                                                             <Border Width="54" Height="54" CornerRadius="27" BorderThickness="3"
                                                                     BorderBrush="{Binding AvatarBorderBrush}" Padding="3"
@@ -165,7 +185,9 @@
                                                                     <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
                                                                                TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding DisplayName}"
                                                                                ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1" />
-                                                                    <TextBlock Grid.Column="1" Text="{Binding Platform}" FontSize="9" Foreground="#7156E8" />
+                                                                    <Border Grid.Column="1" Background="{Binding PlatformBadgeBackground}" CornerRadius="5" Padding="6,2" VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding Platform}" FontSize="9" FontWeight="SemiBold" Foreground="White" />
+                                                                    </Border>
                                                                 </Grid>
                                                                 <TextBlock Text="{Binding Description}" FontSize="10" Foreground="{DynamicResource SecondaryTextBrush}"
                                                                            TextWrapping="Wrap" MaxLines="3" ToolTip.Tip="{Binding Description}"
@@ -177,6 +199,10 @@
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
                                     </ScrollViewer>
+                                    <Canvas x:Name="ChannelSelectionOverlay" IsHitTestVisible="False" ClipToBounds="True">
+                                        <Border x:Name="ChannelSelectionRectangle" IsVisible="False" BorderBrush="#35B879"
+                                                BorderThickness="1.5" Background="#5535B879" CornerRadius="3" />
+                                    </Canvas>
                                 </Grid>
                             </Grid>
                         </Border>
@@ -202,44 +228,44 @@
                                             IsVisible="False" Click="DeleteSelected_Click" ToolTip.Tip="선택한 영상 삭제" />
                                     <Button x:Name="EditSelectedButton" Content="✎ 수정" Height="42" Padding="12,8"
                                             IsVisible="False" IsEnabled="False" Click="EditSelected_Click" ToolTip.Tip="영상 한 개를 선택해 수정" />
-                                    <Button x:Name="ThumbnailViewButton" Width="42" Height="42" Padding="0" Classes="primary"
+                                    <Button x:Name="ThumbnailViewButton" Width="42" Height="42" Padding="0" Classes="view-toggle"
                                             HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                                             Click="ThumbnailView_Click" IsVisible="False" ToolTip.Tip="썸네일 표시 전환">
-                                        <Border Width="26" Height="21" BorderBrush="White" BorderThickness="1.5" CornerRadius="2">
+                                        <Border Width="26" Height="21" Classes="view-icon-frame" BorderThickness="1.5" CornerRadius="2">
                                             <Grid>
-                                                <Ellipse Width="5" Height="5" Fill="White" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,3,0" />
-                                                <Polyline Points="2,17 8,10 12,14 16,9 23,17" Stroke="White" StrokeThickness="1.8" />
+                                                <Ellipse Width="5" Height="5" Classes="view-icon-fill" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,3,3,0" />
+                                                <Polyline Points="2,17 8,10 12,14 16,9 23,17" Classes="view-icon-stroke" StrokeThickness="1.8" />
                                             </Grid>
                                         </Border>
                                     </Button>
-                                    <Button x:Name="GridViewButton" Width="42" Height="42" Padding="0" Classes="primary"
+                                    <Button x:Name="GridViewButton" Width="42" Height="42" Padding="0" Classes="view-toggle"
                                             HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                                             Click="GridView_Click" IsVisible="False" ToolTip.Tip="그리드 보기">
                                         <Grid Width="25" Height="25" ColumnDefinitions="7,7,7" RowDefinitions="7,7,7" ColumnSpacing="2" RowSpacing="2">
-                                            <Border Background="White" CornerRadius="1" />
-                                            <Border Grid.Column="1" Background="White" CornerRadius="1" />
-                                            <Border Grid.Column="2" Background="White" CornerRadius="1" />
-                                            <Border Grid.Row="1" Background="White" CornerRadius="1" />
-                                            <Border Grid.Row="1" Grid.Column="1" Background="White" CornerRadius="1" />
-                                            <Border Grid.Row="1" Grid.Column="2" Background="White" CornerRadius="1" />
-                                            <Border Grid.Row="2" Background="White" CornerRadius="1" />
-                                            <Border Grid.Row="2" Grid.Column="1" Background="White" CornerRadius="1" />
-                                            <Border Grid.Row="2" Grid.Column="2" Background="White" CornerRadius="1" />
+                                            <Border Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Column="1" Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Column="2" Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Row="1" Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Row="1" Grid.Column="1" Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Row="1" Grid.Column="2" Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Row="2" Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Row="2" Grid.Column="1" Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Row="2" Grid.Column="2" Classes="view-icon-fill" CornerRadius="1" />
                                         </Grid>
                                     </Button>
-                                    <Button x:Name="ListViewButton" Width="42" Height="42" Padding="0" Classes="primary"
+                                    <Button x:Name="ListViewButton" Width="42" Height="42" Padding="0" Classes="view-toggle"
                                             HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                                             Click="ListView_Click" IsVisible="False" ToolTip.Tip="리스트 보기">
                                         <Grid Width="26" Height="24" ColumnDefinitions="7,16" RowDefinitions="6,6,6" ColumnSpacing="3" RowSpacing="3">
-                                            <Border Background="White" CornerRadius="1" />
-                                            <Border Grid.Column="1" Height="2" Background="White" CornerRadius="1" VerticalAlignment="Center" />
-                                            <Border Grid.Row="1" Background="White" CornerRadius="1" />
-                                            <Border Grid.Row="1" Grid.Column="1" Height="2" Background="White" CornerRadius="1" VerticalAlignment="Center" />
-                                            <Border Grid.Row="2" Background="White" CornerRadius="1" />
-                                            <Border Grid.Row="2" Grid.Column="1" Height="2" Background="White" CornerRadius="1" VerticalAlignment="Center" />
+                                            <Border Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Column="1" Height="2" Classes="view-icon-fill" CornerRadius="1" VerticalAlignment="Center" />
+                                            <Border Grid.Row="1" Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Row="1" Grid.Column="1" Height="2" Classes="view-icon-fill" CornerRadius="1" VerticalAlignment="Center" />
+                                            <Border Grid.Row="2" Classes="view-icon-fill" CornerRadius="1" />
+                                            <Border Grid.Row="2" Grid.Column="1" Height="2" Classes="view-icon-fill" CornerRadius="1" VerticalAlignment="Center" />
                                         </Grid>
                                     </Button>
-                                    <Button x:Name="DirectAddButton" Content="＋ 추가" MinWidth="82" Height="42" Padding="14,8" Classes="primary" Click="DirectAddChannelVideo_Click" IsVisible="False" ToolTip.Tip="다시보기 직접 추가" />
+                                    <Button x:Name="DirectAddButton" Content="+" Width="42" Height="42" Padding="0" FontSize="25" FontWeight="SemiBold" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Classes="primary" Click="DirectAddChannelVideo_Click" IsVisible="False" ToolTip.Tip="다시보기 직접 추가" />
                                     <Button x:Name="RefreshChannelButton" Width="42" Height="42" Padding="0" Classes="primary"
                                             HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                                             Click="RefreshChannelVideos_Click" IsVisible="False" ToolTip.Tip="새로고침">
@@ -250,18 +276,21 @@
                             <Grid x:Name="CardsArea" Grid.Row="1" Focusable="True" IsTabStop="True" KeyDown="CardsArea_KeyDown">
                             <Border x:Name="EmptyState" BorderBrush="#ECECF1" BorderThickness="0,1,0,0">
                                 <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10" MaxWidth="340">
-                                    <Border Width="56" Height="56" CornerRadius="18" Background="#F0EDFF" HorizontalAlignment="Center">
-                                        <TextBlock Text="▤" FontSize="25" Foreground="#7C5CFC" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                    </Border>
-                                            <TextBlock x:Name="EmptyStateTitle" Text="채널을 추가하거나 선택해주세요" FontSize="17" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
+                                    <Button x:Name="EmptyStateChannelAddButton" Content="+" Width="56" Height="56" Padding="0"
+                                            FontSize="34" FontWeight="Regular" CornerRadius="18" Classes="primary"
+                                            HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                            HorizontalAlignment="Center" Click="AddChannel_Click" ToolTip.Tip="채널 추가" />
+                                    <TextBlock x:Name="EmptyStateTitle" Text="채널을 추가하거나 선택해주세요" FontSize="17" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
                                                HorizontalAlignment="Center" />
+                                    <StackPanel x:Name="ChannelEmptyActions" Orientation="Horizontal" Spacing="10" IsVisible="False" HorizontalAlignment="Center">
+                                        <Button Content="다시보기 수동추가" Width="170" Height="40" Classes="primary"
+                                                HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                                Click="DirectAddChannelVideo_Click" />
+                                        <Button x:Name="EmptyStatePlatformRefreshButton" Width="170" Height="40" Classes="primary" Click="RefreshChannelVideos_Click" />
+                                    </StackPanel>
                                     <TextBlock x:Name="EmptyStateDescription" Text="왼쪽 채널 목록에서 채널을 선택하거나 새 채널을 추가해 주세요."
                                                FontSize="12" Foreground="#85899B" TextAlignment="Center" TextWrapping="Wrap" HorizontalAlignment="Center" />
                                     <Button x:Name="EmptyStateAddButton" Content="＋  영상 추가하기" Classes="primary" Margin="0,6,0,0" Click="AddMenu_Click" />
-                                    <StackPanel x:Name="ChannelEmptyActions" Orientation="Horizontal" Spacing="10" IsVisible="False" HorizontalAlignment="Center">
-                                        <Button Content="새로고침" Click="RefreshChannelVideos_Click" />
-                                        <Button Content="직접추가" Classes="primary" Click="DirectAddChannelVideo_Click" />
-                                    </StackPanel>
                                 </StackPanel>
                             </Border>
                             <ScrollViewer x:Name="CardsScroller" IsVisible="False" HorizontalScrollBarVisibility="Disabled"
@@ -277,7 +306,7 @@
                                             <Border Width="{Binding CardWidth}" MinHeight="{Binding CardMinHeight}" Margin="0,16,16,0" Padding="15"
                                                     Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
                                                     Tag="grid" Loaded="MediaCard_Loaded" Unloaded="MediaCard_Unloaded" PointerPressed="MediaCard_PointerPressed">
-                                                <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto" RowSpacing="9">
+                                                <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="9">
                                                     <Border Height="142" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
                                                             IsVisible="{Binding ShowThumbnails}">
                                                         <Grid>
@@ -287,15 +316,43 @@
                                                         </Grid>
                                                     </Border>
                                                     <TextBlock Grid.Row="1" Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
-                                                               TextTrimming="CharacterEllipsis" MaxLines="2" />
-                                                    <TextBlock Grid.Row="2" Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
-                                                               TextDecorations="Underline" Cursor="Hand" VerticalAlignment="Top" PointerPressed="MediaSource_PointerPressed" />
-                                                    <TextBlock Grid.Row="3" Text="{Binding LocalFilePathLabel}" IsVisible="{Binding HasLocalFilePath}"
-                                                               FontSize="11" Foreground="#7156E8" TextTrimming="CharacterEllipsis" TextDecorations="Underline"
-                                                               Cursor="Hand" ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed" />
-                                                    <Grid Grid.Row="4" ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                                                        <StackPanel Spacing="3" VerticalAlignment="Center">
-                                                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                                               TextTrimming="CharacterEllipsis" MaxLines="2" ToolTip.Tip="{Binding Title}"
+                                                               ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1" />
+                                                    <Grid Grid.Row="2" MinHeight="18" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand"
+                                                          VerticalAlignment="Top" PointerPressed="MediaSource_PointerPressed">
+                                                        <Canvas Width="18" Height="18" VerticalAlignment="Center" IsVisible="{Binding HasOnlineUrl}">
+                                                            <Ellipse Canvas.Left="1.5" Canvas.Top="2" Width="13" Height="13" Stroke="{DynamicResource SecondaryTextBrush}" StrokeThickness="1.2" />
+                                                            <Ellipse Canvas.Left="5.5" Canvas.Top="2" Width="5" Height="13" Stroke="{DynamicResource SecondaryTextBrush}" StrokeThickness="1.1" />
+                                                            <Border Canvas.Left="2" Canvas.Top="8" Width="12" Height="1" Background="{DynamicResource SecondaryTextBrush}" />
+                                                            <Border Canvas.Left="9" Canvas.Top="11" Width="8" Height="4" BorderBrush="{DynamicResource SecondaryTextBrush}" BorderThickness="1.1" CornerRadius="3" RenderTransformOrigin="50%,50%">
+                                                                <Border.RenderTransform><RotateTransform Angle="-38" /></Border.RenderTransform>
+                                                            </Border>
+                                                            <Border Canvas.Left="11" Canvas.Top="8" Width="7" Height="4" BorderBrush="{DynamicResource SecondaryTextBrush}" BorderThickness="1.1" CornerRadius="3" RenderTransformOrigin="50%,50%">
+                                                                <Border.RenderTransform><RotateTransform Angle="-38" /></Border.RenderTransform>
+                                                            </Border>
+                                                        </Canvas>
+                                                        <TextBlock Grid.Column="1" Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
+                                                                   TextDecorations="Underline" VerticalAlignment="Top" ToolTip.Tip="{Binding SourceLabel}" IsVisible="{Binding HasOnlineUrl}" />
+                                                    </Grid>
+                                                    <Grid Grid.Row="3" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand"
+                                                          IsVisible="{Binding HasLocalFilePath}" ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed">
+                                                        <Canvas Width="18" Height="18" VerticalAlignment="Center">
+                                                            <Border Canvas.Left="2.5" Canvas.Top="1" Width="11" Height="15" BorderBrush="#7156E8" BorderThickness="1.1" CornerRadius="1" />
+                                                            <Polyline Points="10,1 10,5 14,5" Stroke="#7156E8" StrokeThickness="1.1" />
+                                                            <Border Canvas.Left="5" Canvas.Top="7" Width="6" Height="1" Background="#7156E8" />
+                                                            <Border Canvas.Left="5" Canvas.Top="9.5" Width="5" Height="1" Background="#7156E8" />
+                                                            <Border Canvas.Left="9" Canvas.Top="12" Width="8" Height="4" BorderBrush="#7156E8" BorderThickness="1.1" CornerRadius="3" RenderTransformOrigin="50%,50%">
+                                                                <Border.RenderTransform><RotateTransform Angle="-38" /></Border.RenderTransform>
+                                                            </Border>
+                                                            <Border Canvas.Left="11" Canvas.Top="9" Width="7" Height="4" BorderBrush="#7156E8" BorderThickness="1.1" CornerRadius="3" RenderTransformOrigin="50%,50%">
+                                                                <Border.RenderTransform><RotateTransform Angle="-38" /></Border.RenderTransform>
+                                                            </Border>
+                                                        </Canvas>
+                                                        <TextBlock Grid.Column="1" Text="{Binding LocalFilePathLabel}" FontSize="11" Foreground="#7156E8" TextTrimming="CharacterEllipsis"
+                                                                   TextDecorations="Underline" VerticalAlignment="Center" ToolTip.Tip="{Binding LocalFilePathLabel}" />
+                                                    </Grid>
+                                                    <StackPanel Grid.Row="4" Spacing="3">
+                                                        <StackPanel Orientation="Horizontal" Spacing="4">
                                                                 <StackPanel Orientation="Horizontal" Spacing="3" IsVisible="{Binding IsLastPositionVisible}">
                                                                     <TextBlock Text="시청 위치:" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
                                                                     <TextBox Width="20" MinWidth="0" Height="18" MinHeight="0" Padding="0" FontSize="10" BorderBrush="#555963" BorderThickness="1" VerticalContentAlignment="Center" MaxLength="2" Tag="hours" Text="{Binding LastPositionHours}" TextChanged="LastPositionInput_TextChanged" TextInput="LastPositionInput_TextInput" GotFocus="LastPositionInput_GotFocus" LostFocus="LastPositionInput_LostFocus" />
@@ -306,21 +363,23 @@
                                                                 </StackPanel>
                                                                 <TextBlock Text="/" IsVisible="{Binding IsLastPositionVisible}" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
                                                                 <TextBlock Text="{Binding DurationLabel}" ToolTip.Tip="영상 시간" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
-                                                            </StackPanel>
-                                                            <TextBlock Text="{Binding PublishedAtLabel}" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}" />
                                                         </StackPanel>
-                                                        <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
-                                                                BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
-                                                                Click="WatchStatus_Click" />
-                                                    </Grid>
-                                                    <Grid Classes="playback-progress" Grid.Row="5" Height="20" Background="Transparent" IsVisible="{Binding IsLastPositionVisible}"
+                                                        <Grid Classes="playback-progress" Height="20" Background="Transparent" IsVisible="{Binding IsLastPositionVisible}"
                                                           Cursor="Hand" Focusable="True"
                                                           PointerEntered="PlaybackProgress_PointerEntered" PointerExited="PlaybackProgress_PointerExited"
                                                           PointerPressed="PlaybackPositionSlider_PointerPressed" PointerMoved="PlaybackPositionSlider_PointerMoved" PointerReleased="PlaybackPositionSlider_PointerReleased"
                                                           KeyDown="PlaybackPositionSlider_KeyDown" KeyUp="PlaybackPositionSlider_KeyUp">
-                                                        <ProgressBar Minimum="0" Maximum="1" Value="{Binding PlaybackProgressRatio}" Height="{Binding PlaybackProgressBarHeight}"
-                                                                     VerticalAlignment="Center" Background="#C9CBD3" Foreground="{Binding PlaybackAccentBrush}"
-                                                                     IsHitTestVisible="False" />
+                                                            <ProgressBar Minimum="0" Maximum="1" Value="{Binding PlaybackProgressRatio}" Height="{Binding PlaybackProgressBarHeight}"
+                                                                         VerticalAlignment="Center" Background="#C9CBD3" Foreground="{Binding PlaybackAccentBrush}"
+                                                                         IsHitTestVisible="False" />
+                                                        </Grid>
+                                                    </StackPanel>
+                                                    <Grid Grid.Row="5" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                        <TextBlock Text="{Binding PublishedAtLabel}" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}"
+                                                                   VerticalAlignment="Center" ToolTip.Tip="방송 날짜" />
+                                                        <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
+                                                                BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
+                                                                Click="WatchStatus_Click" />
                                                     </Grid>
                                                 </Grid>
                                             </Border>
@@ -341,7 +400,7 @@
                                         <Border HorizontalAlignment="Stretch" MinHeight="122" Margin="0,10,0,0" Padding="14"
                                                 Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
                                                 Tag="list" Loaded="MediaCard_Loaded" Unloaded="MediaCard_Unloaded" PointerPressed="MediaCard_PointerPressed">
-                                            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="16">
+                                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
                                                 <Border Grid.Column="0" Width="160" Height="94" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
                                                         IsVisible="{Binding ShowThumbnails}">
                                                     <Grid>
@@ -350,17 +409,45 @@
                                                         <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" IsVisible="{Binding HasThumbnail}" />
                                                     </Grid>
                                                 </Border>
-                                                <Grid Grid.Column="1" RowDefinitions="*,Auto" RowSpacing="7">
+                                                <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto" RowSpacing="7">
                                                     <StackPanel Spacing="6" VerticalAlignment="Center">
                                                         <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
-                                                                   TextTrimming="CharacterEllipsis" MaxLines="1" />
-                                                        <TextBlock Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
-                                                                   TextDecorations="Underline" Cursor="Hand" PointerPressed="MediaSource_PointerPressed" />
-                                                        <TextBlock Text="{Binding LocalFilePathLabel}" IsVisible="{Binding HasLocalFilePath}"
-                                                                   FontSize="11" Foreground="#7156E8" TextTrimming="CharacterEllipsis" TextDecorations="Underline"
-                                                                   Cursor="Hand" ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed" />
+                                                                   TextTrimming="CharacterEllipsis" MaxLines="1" ToolTip.Tip="{Binding Title}"
+                                                                   ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1" />
+                                                        <Grid MinHeight="18" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand" PointerPressed="MediaSource_PointerPressed">
+                                                            <Canvas Width="18" Height="18" VerticalAlignment="Center" IsVisible="{Binding HasOnlineUrl}">
+                                                                <Ellipse Canvas.Left="1.5" Canvas.Top="2" Width="13" Height="13" Stroke="{DynamicResource SecondaryTextBrush}" StrokeThickness="1.2" />
+                                                                <Ellipse Canvas.Left="5.5" Canvas.Top="2" Width="5" Height="13" Stroke="{DynamicResource SecondaryTextBrush}" StrokeThickness="1.1" />
+                                                                <Border Canvas.Left="2" Canvas.Top="8" Width="12" Height="1" Background="{DynamicResource SecondaryTextBrush}" />
+                                                                <Border Canvas.Left="9" Canvas.Top="11" Width="8" Height="4" BorderBrush="{DynamicResource SecondaryTextBrush}" BorderThickness="1.1" CornerRadius="3" RenderTransformOrigin="50%,50%">
+                                                                    <Border.RenderTransform><RotateTransform Angle="-38" /></Border.RenderTransform>
+                                                                </Border>
+                                                                <Border Canvas.Left="11" Canvas.Top="8" Width="7" Height="4" BorderBrush="{DynamicResource SecondaryTextBrush}" BorderThickness="1.1" CornerRadius="3" RenderTransformOrigin="50%,50%">
+                                                                    <Border.RenderTransform><RotateTransform Angle="-38" /></Border.RenderTransform>
+                                                                </Border>
+                                                            </Canvas>
+                                                            <TextBlock Grid.Column="1" Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
+                                                                       TextDecorations="Underline" VerticalAlignment="Center" ToolTip.Tip="{Binding SourceLabel}" IsVisible="{Binding HasOnlineUrl}" />
+                                                        </Grid>
+                                                        <Grid ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand" IsVisible="{Binding HasLocalFilePath}"
+                                                              ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed">
+                                                            <Canvas Width="18" Height="18" VerticalAlignment="Center">
+                                                                <Border Canvas.Left="2.5" Canvas.Top="1" Width="11" Height="15" BorderBrush="#7156E8" BorderThickness="1.1" CornerRadius="1" />
+                                                                <Polyline Points="10,1 10,5 14,5" Stroke="#7156E8" StrokeThickness="1.1" />
+                                                                <Border Canvas.Left="5" Canvas.Top="7" Width="6" Height="1" Background="#7156E8" />
+                                                                <Border Canvas.Left="5" Canvas.Top="9.5" Width="5" Height="1" Background="#7156E8" />
+                                                                <Border Canvas.Left="9" Canvas.Top="12" Width="8" Height="4" BorderBrush="#7156E8" BorderThickness="1.1" CornerRadius="3" RenderTransformOrigin="50%,50%">
+                                                                    <Border.RenderTransform><RotateTransform Angle="-38" /></Border.RenderTransform>
+                                                                </Border>
+                                                                <Border Canvas.Left="11" Canvas.Top="9" Width="7" Height="4" BorderBrush="#7156E8" BorderThickness="1.1" CornerRadius="3" RenderTransformOrigin="50%,50%">
+                                                                    <Border.RenderTransform><RotateTransform Angle="-38" /></Border.RenderTransform>
+                                                                </Border>
+                                                            </Canvas>
+                                                            <TextBlock Grid.Column="1" Text="{Binding LocalFilePathLabel}" FontSize="11" Foreground="#7156E8" TextTrimming="CharacterEllipsis"
+                                                                       TextDecorations="Underline" VerticalAlignment="Center" ToolTip.Tip="{Binding LocalFilePathLabel}" />
+                                                        </Grid>
                                                     </StackPanel>
-                                                    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                    <StackPanel Grid.Row="1" Spacing="3">
                                                         <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
                                                             <StackPanel Orientation="Horizontal" Spacing="3" IsVisible="{Binding IsLastPositionVisible}">
                                                                 <TextBlock Text="시청 위치:" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
@@ -372,21 +459,24 @@
                                                             </StackPanel>
                                                             <TextBlock Text="/" IsVisible="{Binding IsLastPositionVisible}" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
                                                             <TextBlock Text="{Binding DurationLabel}" ToolTip.Tip="영상 시간" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
-                                                            <TextBlock Text="{Binding PublishedAtLabel}" FontSize="12" Foreground="{DynamicResource SecondaryTextBrush}" />
                                                         </StackPanel>
-                                                        <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
-                                                                BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
-                                                                Click="WatchStatus_Click" />
-                                                    </Grid>
-                                                </Grid>
-                                                <Grid Classes="playback-progress" Grid.Row="1" Grid.ColumnSpan="2" Margin="0,4,0,0" Height="20" Background="Transparent" IsVisible="{Binding IsLastPositionVisible}"
+                                                        <Grid Classes="playback-progress" Height="20" Background="Transparent" IsVisible="{Binding IsLastPositionVisible}"
                                                       Cursor="Hand" Focusable="True"
                                                       PointerEntered="PlaybackProgress_PointerEntered" PointerExited="PlaybackProgress_PointerExited"
                                                       PointerPressed="PlaybackPositionSlider_PointerPressed" PointerMoved="PlaybackPositionSlider_PointerMoved" PointerReleased="PlaybackPositionSlider_PointerReleased"
                                                       KeyDown="PlaybackPositionSlider_KeyDown" KeyUp="PlaybackPositionSlider_KeyUp">
-                                                    <ProgressBar Minimum="0" Maximum="1" Value="{Binding PlaybackProgressRatio}" Height="{Binding PlaybackProgressBarHeight}"
-                                                                 VerticalAlignment="Center" Background="#C9CBD3" Foreground="{Binding PlaybackAccentBrush}"
-                                                                 IsHitTestVisible="False" />
+                                                            <ProgressBar Minimum="0" Maximum="1" Value="{Binding PlaybackProgressRatio}" Height="{Binding PlaybackProgressBarHeight}"
+                                                                         VerticalAlignment="Center" Background="#C9CBD3" Foreground="{Binding PlaybackAccentBrush}"
+                                                                         IsHitTestVisible="False" />
+                                                        </Grid>
+                                                    </StackPanel>
+                                                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                        <TextBlock Text="{Binding PublishedAtLabel}" FontSize="12" Foreground="{DynamicResource SecondaryTextBrush}"
+                                                                   VerticalAlignment="Center" ToolTip.Tip="방송 날짜" />
+                                                        <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
+                                                                BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
+                                                                Click="WatchStatus_Click" />
+                                                    </Grid>
                                                 </Grid>
                                             </Grid>
                                         </Border>
@@ -438,6 +528,11 @@
                 </Grid>
             </Border>
         </Grid>
+        <Border x:Name="RefreshNotification" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Margin="0,0,58,48" Padding="16,11" CornerRadius="10" Background="#252836"
+                BorderBrush="#35B879" BorderThickness="1" IsVisible="False" IsHitTestVisible="False">
+            <TextBlock x:Name="RefreshNotificationText" Foreground="White" FontSize="13" FontWeight="SemiBold" />
+        </Border>
     </Grid>
 
     <Window.Styles>
@@ -470,6 +565,71 @@
         </Style>
         <Style Selector="Button.primary:pointerover">
             <Setter Property="Background" Value="#6045D4" />
+        </Style>
+        <Style Selector="Button.view-toggle">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="9" />
+        </Style>
+        <Style Selector="Button.view-toggle:pointerover">
+            <Setter Property="Background" Value="#ECEAF3" />
+        </Style>
+        <Style Selector="Button.view-toggle.selected">
+            <Setter Property="Background" Value="#7156E8" />
+            <Setter Property="BorderBrush" Value="#7156E8" />
+        </Style>
+        <Style Selector="Button.view-toggle.selected:pointerover">
+            <Setter Property="Background" Value="#6045D4" />
+            <Setter Property="BorderBrush" Value="#6045D4" />
+        </Style>
+        <Style Selector="Button.view-toggle Border.view-icon-frame">
+            <Setter Property="BorderBrush" Value="#565A68" />
+        </Style>
+        <Style Selector="Button.view-toggle.selected Border.view-icon-frame">
+            <Setter Property="BorderBrush" Value="White" />
+        </Style>
+        <Style Selector="Button.view-toggle Border.view-icon-fill">
+            <Setter Property="Background" Value="#565A68" />
+        </Style>
+        <Style Selector="Button.view-toggle.selected Border.view-icon-fill">
+            <Setter Property="Background" Value="White" />
+        </Style>
+        <Style Selector="Button.view-toggle Ellipse.view-icon-fill">
+            <Setter Property="Fill" Value="#565A68" />
+        </Style>
+        <Style Selector="Button.view-toggle.selected Ellipse.view-icon-fill">
+            <Setter Property="Fill" Value="White" />
+        </Style>
+        <Style Selector="Button.view-toggle Polyline.view-icon-stroke">
+            <Setter Property="Stroke" Value="#565A68" />
+        </Style>
+        <Style Selector="Button.view-toggle.selected Polyline.view-icon-stroke">
+            <Setter Property="Stroke" Value="White" />
+        </Style>
+        <Style Selector="Button.channel-delete">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+        </Style>
+        <Style Selector="Button.channel-delete:pointerover">
+            <Setter Property="Background" Value="#FCE8E8" />
+            <Setter Property="BorderBrush" Value="#F3C6C6" />
+        </Style>
+        <Style Selector="Border.channel-aggregate">
+            <Setter Property="Background" Value="{DynamicResource CardSurfaceBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource SoftBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="9" />
+            <Setter Property="Padding" Value="10" />
+            <Setter Property="MinHeight" Value="40" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Border.channel-aggregate.selected">
+            <Setter Property="Background" Value="#ECE7FF" />
+            <Setter Property="BorderBrush" Value="#7156E8" />
+            <Setter Property="BorderThickness" Value="2" />
         </Style>
     </Window.Styles>
 </Window>

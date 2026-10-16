@@ -18,6 +18,7 @@ namespace StreamVODTracker;
 
 public partial class MainWindow : Window
 {
+    public static string UnselectedCardBorderColor { get; private set; } = "#C3C7D0";
     private readonly ObservableCollection<MediaCard> _allCards = [];
     private readonly ObservableCollection<MediaCard> _visibleCards = [];
     private readonly List<MediaCard> _filteredCards = [];
@@ -28,11 +29,20 @@ public partial class MainWindow : Window
     private int _cardDisplayLimit = InitialCardDisplayLimit;
     private readonly ObservableCollection<ChannelEntry> _channels = [];
     private readonly ObservableCollection<ChannelEntry> _visibleChannels = [];
+    private readonly HashSet<string> _selectedChannelUrls = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<Border> _channelCardVisuals = [];
+    private readonly HashSet<string> _channelDragSelectionBase = new(StringComparer.OrdinalIgnoreCase);
+    private bool _isChannelPointerTracking;
+    private bool _isChannelLassoSelecting;
+    private Point _channelLassoStart;
+    private ChannelEntry? _channelPressedTarget;
+    private ChannelEntry? _channelSelectionAnchor;
+    private KeyModifiers _channelPressModifiers;
     private readonly AppSettingsStore _settingsStore = new(AppContext.BaseDirectory);
     private readonly List<Border> _cardVisuals = [];
     private readonly HashSet<MediaCard> _dragSelectionBase = [];
     private readonly HashSet<string> _durationRefreshInProgress = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly SemaphoreSlim SoopDurationLoadLimiter = new(4);
+    private static readonly SemaphoreSlim SoopDurationLoadLimiter = new(10);
     private readonly LocalCsvDatabase _localDatabase;
     private readonly IVodRepository _vodRepository;
     private static readonly SemaphoreSlim ThumbnailLoadLimiter = new(4);
@@ -41,15 +51,18 @@ public partial class MainWindow : Window
     private bool _showThumbnails = true;
     private readonly DispatcherTimer _channelStatusTimer = new() { Interval = TimeSpan.FromMinutes(2) };
     private readonly DispatcherTimer _searchDurationRefreshTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
+    private readonly DispatcherTimer _refreshNotificationTimer = new() { Interval = TimeSpan.FromSeconds(3) };
     private bool _isDarkTheme;
     private bool _isLoadingSettings = true;
     private bool _sortDescending = true;
     private bool _isAllLibraryView;
+    private bool _isShowAllChannels;
     private bool _isLoadingMoreAtScrollEnd;
 
     public MainWindow()
     {
         InitializeComponent();
+        UpdateViewButtonStates();
         _sortDescending = _settingsStore.LoadSortDescending();
         UpdateSortDirectionButton();
         SortOrder.SelectedIndex = _settingsStore.LoadSortOrder() switch
@@ -77,11 +90,17 @@ public partial class MainWindow : Window
         ApplyTheme(_settingsStore.LoadIsDarkTheme());
         _searchDurationRefreshTimer.Tick += SearchDurationRefreshTimer_Tick;
         _channelStatusTimer.Tick += ChannelStatusTimer_Tick;
+        _refreshNotificationTimer.Tick += (_, _) =>
+        {
+            _refreshNotificationTimer.Stop();
+            RefreshNotification.IsVisible = false;
+        };
         _channelStatusTimer.Start();
         Closed += (_, _) =>
         {
             _channelStatusTimer.Stop();
             _searchDurationRefreshTimer.Stop();
+            _refreshNotificationTimer.Stop();
             foreach (var channel in _channels) channel.Dispose();
             foreach (var card in _allCards) card.Dispose();
         };
@@ -202,8 +221,11 @@ public partial class MainWindow : Window
         ChannelScroller.IsVisible = _channels.Count > 0;
     }
 
-    private void SaveChannel(ChannelEntry channel) =>
-        _vodRepository.Save(channel, _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl));
+    private void SaveChannel(ChannelEntry channel)
+    {
+        if (_channels.Contains(channel))
+            _vodRepository.Save(channel, _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl));
+    }
 
     private async Task LoadChannelAppearanceAsync(ChannelEntry channel, string platformKey, string channelId,
         string? imageUrl, bool profileLookupSucceeded)
@@ -282,6 +304,7 @@ public partial class MainWindow : Window
     private void ApplyTheme(bool isDark)
     {
         _isDarkTheme = isDark;
+        UnselectedCardBorderColor = isDark ? "#454955" : "#C3C7D0";
         _settingsStore.SaveIsDarkTheme(isDark);
         if (Application.Current is { } app)
             app.RequestedThemeVariant = isDark ? ThemeVariant.Dark : ThemeVariant.Light;
@@ -302,6 +325,8 @@ public partial class MainWindow : Window
         SetBrushColor("LicenseBodyBrush", isDark ? "#D1CEDD" : "#55596A");
         SetBrushColor("ThemeButtonBackgroundBrush", isDark ? "#292C36" : "#FFFFFF");
         SetBrushColor("ThemeButtonForegroundBrush", isDark ? "#F3F4F8" : "#252836");
+        foreach (var card in _allCards) card.RefreshTheme();
+        foreach (var channel in _channels) channel.RefreshTheme();
 
         ThemeToggleButton.Content = isDark ? "☾" : "☀";
         ToolTip.SetTip(ThemeToggleButton, isDark ? "라이트 모드로 전환" : "다크 모드로 전환");
@@ -321,7 +346,7 @@ public partial class MainWindow : Window
         {
             UpdateNavigationSelection(section);
             _isAllLibraryView = true;
-            _selectedChannel = null;
+            ClearChannelSelection();
             _cardDisplayLimit = InitialCardDisplayLimit;
             foreach (var channel in _channels) channel.IsSelected = false;
             PlatformTabs.SelectedIndex = -1;
@@ -353,6 +378,7 @@ public partial class MainWindow : Window
 
         UpdateNavigationSelection(section);
         _isAllLibraryView = false;
+        ClearChannelSelection();
         PlatformTabs.SelectedIndex = section == "soop" ? 1 : 0;
         UpdateCards();
     }
@@ -377,13 +403,7 @@ public partial class MainWindow : Window
 
         var section = tab.Tag?.ToString();
         if (section is "chzzk" or "soop") UpdateNavigationSelection(section);
-        if (_selectedChannel is not null &&
-            ((section == "soop") != (_selectedChannel.Platform == "SOOP")))
-        {
-            _selectedChannel.IsSelected = false;
-            _selectedChannel = null;
-            _cardDisplayLimit = InitialCardDisplayLimit;
-        }
+        ClearChannelSelection();
         if (PlatformTabs is not null) PlatformTabs.IsVisible = true;
         if (LibraryPanel is not null) LibraryPanel.IsVisible = true;
         if (LicensePanel is not null) LicensePanel.IsVisible = false;
@@ -525,13 +545,17 @@ public partial class MainWindow : Window
 
     private void ChannelCard_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
-        if (sender is not Border { DataContext: ChannelEntry selectedChannel }) return;
-        _selectedChannel = selectedChannel;
-        _cardDisplayLimit = InitialCardDisplayLimit;
-        foreach (var channel in _channels) channel.IsSelected = ReferenceEquals(channel, selectedChannel);
-        PlatformTabs.SelectedIndex = selectedChannel.Platform == "SOOP" ? 1 : 0;
-        UpdateCards();
-        _ = RefreshChannelDurationsAsync(selectedChannel);
+        if (sender is not Border { DataContext: ChannelEntry channel } ||
+            !e.GetCurrentPoint(ChannelPanel).Properties.IsLeftButtonPressed) return;
+        _isChannelPointerTracking = true;
+        _isChannelLassoSelecting = false;
+        _channelPressedTarget = channel;
+        _channelPressModifiers = e.KeyModifiers;
+        _channelDragSelectionBase.Clear();
+        _channelDragSelectionBase.UnionWith(_selectedChannelUrls);
+        _channelLassoStart = e.GetPosition(ChannelPanel);
+        e.Pointer.Capture(this);
+        e.Handled = true;
     }
 
     private async void ChannelAvatar_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
@@ -539,13 +563,157 @@ public partial class MainWindow : Window
         if (sender is not Image { DataContext: ChannelEntry channel } ||
             !Uri.TryCreate(channel.ChannelUrl, UriKind.Absolute, out var uri)) return;
         e.Handled = true;
-        _selectedChannel = channel;
-        _cardDisplayLimit = InitialCardDisplayLimit;
-        foreach (var item in _channels) item.IsSelected = ReferenceEquals(item, channel);
-        PlatformTabs.SelectedIndex = channel.Platform == "SOOP" ? 1 : 0;
+        ApplyChannelClickSelection(channel, e.KeyModifiers);
         UpdateCards();
         _ = RefreshChannelDurationsAsync(channel);
         await Launcher.LaunchUriAsync(uri);
+    }
+
+    private void ApplyChannelClickSelection(ChannelEntry channel, KeyModifiers modifiers)
+    {
+        if (modifiers.HasFlag(KeyModifiers.Shift))
+        {
+            var anchorIndex = _visibleChannels.IndexOf(_channelSelectionAnchor ?? channel);
+            var targetIndex = _visibleChannels.IndexOf(channel);
+            if (anchorIndex < 0) anchorIndex = targetIndex;
+            if (!modifiers.HasFlag(KeyModifiers.Control)) _selectedChannelUrls.Clear();
+            for (var i = Math.Min(anchorIndex, targetIndex); i <= Math.Max(anchorIndex, targetIndex); i++)
+                _selectedChannelUrls.Add(_visibleChannels[i].ChannelUrl);
+        }
+        else if (modifiers.HasFlag(KeyModifiers.Control))
+        {
+            if (!_selectedChannelUrls.Add(channel.ChannelUrl)) _selectedChannelUrls.Remove(channel.ChannelUrl);
+            _channelSelectionAnchor = channel;
+        }
+        else
+        {
+            _selectedChannelUrls.Clear();
+            _selectedChannelUrls.Add(channel.ChannelUrl);
+            _channelSelectionAnchor = channel;
+        }
+
+        _isShowAllChannels = false;
+        foreach (var item in _channels) item.IsSelected = _selectedChannelUrls.Contains(item.ChannelUrl);
+        _selectedChannel = _channels.FirstOrDefault(item => _selectedChannelUrls.Contains(item.ChannelUrl));
+        ShowAllChannelsCard.Classes.Set("selected", false);
+    }
+
+    private void ShowAllChannels_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        _isShowAllChannels = true;
+        _selectedChannelUrls.Clear();
+        _selectedChannel = null;
+        foreach (var channel in _channels) channel.IsSelected = false;
+        ShowAllChannelsCard.Classes.Set("selected", true);
+        _cardDisplayLimit = InitialCardDisplayLimit;
+        UpdateCards();
+        e.Handled = true;
+    }
+
+    private void ChannelPanel_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(ChannelPanel).Properties.IsLeftButtonPressed ||
+            IsInsideChannelCard(e.Source) || IsInsideButton(e.Source) || IsInsideScrollBar(e.Source)) return;
+
+        _isChannelPointerTracking = true;
+        _isChannelLassoSelecting = false;
+        _channelPressedTarget = null;
+        _channelPressModifiers = e.KeyModifiers;
+        _channelDragSelectionBase.Clear();
+        _channelLassoStart = e.GetPosition(ChannelPanel);
+        e.Pointer.Capture(this);
+        e.Handled = true;
+    }
+
+    private async void DeleteSelectedChannels_Click(object? sender, RoutedEventArgs e)
+    {
+        var selectedChannels = _channels.Where(channel => _selectedChannelUrls.Contains(channel.ChannelUrl)).ToArray();
+        if (_isShowAllChannels || selectedChannels.Length == 0) return;
+
+        var confirm = new Window
+        {
+            Title = "채널 삭제",
+            Width = 400,
+            Height = 200,
+            MinWidth = 400,
+            MinHeight = 200,
+            MaxWidth = 400,
+            MaxHeight = 200,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        var cancelButton = new Button { Content = "취소", MinWidth = 82, IsCancel = true };
+        var deleteButton = new Button { Content = "삭제", MinWidth = 82, Classes = { "primary" }, IsDefault = true };
+        cancelButton.Click += (_, _) => confirm.Close(false);
+        deleteButton.Click += (_, _) => confirm.Close(true);
+        confirm.Content = new StackPanel
+        {
+            Margin = new Thickness(22),
+            Spacing = 18,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = $"선택한 채널 {selectedChannels.Length}개와 해당 채널의 영상 및 저장 파일을 삭제할까요?",
+                    TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                },
+                new StackPanel
+                {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                    Spacing = 8,
+                    Children = { cancelButton, deleteButton }
+                }
+            }
+        };
+        if (await confirm.ShowDialog<bool?>(this) != true) return;
+
+        var failures = new List<string>();
+        foreach (var channel in selectedChannels)
+        {
+            try
+            {
+                _vodRepository.Delete(channel);
+            }
+            catch (Exception exception)
+            {
+                failures.Add($"{channel.DisplayName}: {exception.Message}");
+                continue;
+            }
+
+            foreach (var card in _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray())
+            {
+                _allCards.Remove(card);
+                card.Dispose();
+            }
+            _channels.Remove(channel);
+            _soopNextPageByChannel.Remove(channel.ChannelUrl);
+            _soopHasMoreByChannel.Remove(channel.ChannelUrl);
+            channel.Dispose();
+        }
+
+        ClearChannelSelection();
+        UpdateCards();
+        if (failures.Count > 0)
+            await ShowTransferMessageAsync("채널 삭제 일부 실패", string.Join(Environment.NewLine, failures));
+    }
+
+    private static bool IsInsideChannelCard(object? source)
+    {
+        for (var visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
+            if (visual is Border { DataContext: ChannelEntry }) return true;
+        return false;
+    }
+
+    private void ClearChannelSelection()
+    {
+        _selectedChannel = null;
+        _isShowAllChannels = false;
+        _selectedChannelUrls.Clear();
+        foreach (var channel in _channels) channel.IsSelected = false;
+        ShowAllChannelsCard?.Classes.Set("selected", false);
+        _cardDisplayLimit = InitialCardDisplayLimit;
     }
 
     private MediaCard? _selectionAnchor;
@@ -636,25 +804,97 @@ public partial class MainWindow : Window
 
     private void Window_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (_isLassoSelecting || CardsArea.IsPointerOver) return;
+        if (_isLassoSelecting || _isChannelPointerTracking || CardsArea.IsPointerOver) return;
         if (DeleteSelectedButton.IsPointerOver || EditSelectedButton.IsPointerOver) return;
         ClearCardSelection();
     }
 
     private void Window_PointerMoved(object? sender, PointerEventArgs e)
     {
+        if (_isChannelPointerTracking && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        {
+            var current = e.GetPosition(ChannelPanel);
+            if (!_isChannelLassoSelecting && Math.Abs(current.X - _channelLassoStart.X) + Math.Abs(current.Y - _channelLassoStart.Y) > 5)
+                _isChannelLassoSelecting = true;
+            if (_isChannelLassoSelecting) UpdateChannelLasso(current);
+            return;
+        }
         if (_isLassoSelecting && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
             UpdateLasso(e.GetPosition(CardsArea));
     }
 
     private void Window_PointerReleased(object? sender, PointerReleasedEventArgs e)
     {
+        if (_isChannelPointerTracking)
+        {
+            var current = e.GetPosition(ChannelPanel);
+            var wasLasso = _isChannelLassoSelecting;
+            var pressedChannel = _channelPressedTarget;
+            if (wasLasso) UpdateChannelLasso(current);
+            else if (pressedChannel is { } channel)
+            {
+                ApplyChannelClickSelection(channel, _channelPressModifiers);
+            }
+            else
+            {
+                ClearChannelSelection();
+            }
+            _selectedChannel = _channels.FirstOrDefault(channel => _selectedChannelUrls.Contains(channel.ChannelUrl));
+            _isChannelPointerTracking = false;
+            _isChannelLassoSelecting = false;
+            _channelPressedTarget = null;
+            e.Pointer.Capture(null);
+            ChannelSelectionRectangle.IsVisible = false;
+            _cardDisplayLimit = InitialCardDisplayLimit;
+            ShowAllChannelsCard.Classes.Set("selected", false);
+            UpdateCards();
+            if (!wasLasso && pressedChannel is not null && _selectedChannelUrls.Contains(pressedChannel.ChannelUrl))
+                _ = RefreshChannelDurationsAsync(pressedChannel);
+            return;
+        }
         if (!_isLassoSelecting) return;
         UpdateLasso(e.GetPosition(CardsArea));
         _isLassoSelecting = false;
         SelectionRectangle.IsVisible = false;
         e.Pointer.Capture(null);
         UpdateSelectionButtons();
+    }
+
+    private void UpdateChannelLasso(Point current)
+    {
+        var left = Math.Min(_channelLassoStart.X, current.X);
+        var top = Math.Min(_channelLassoStart.Y, current.Y);
+        var rect = new Rect(left, top, Math.Abs(current.X - _channelLassoStart.X), Math.Abs(current.Y - _channelLassoStart.Y));
+        Canvas.SetLeft(ChannelSelectionRectangle, left);
+        Canvas.SetTop(ChannelSelectionRectangle, top);
+        ChannelSelectionRectangle.Width = rect.Width;
+        ChannelSelectionRectangle.Height = rect.Height;
+        ChannelSelectionRectangle.IsVisible = rect.Width > 2 || rect.Height > 2;
+        var selection = new HashSet<string>(_channelDragSelectionBase, StringComparer.OrdinalIgnoreCase);
+        foreach (var border in _channelCardVisuals)
+        {
+            if (border.DataContext is not ChannelEntry channel) continue;
+            var position = border.TranslatePoint(new Point(0, 0), ChannelPanel);
+            if (position is not { } topLeft) continue;
+            var bounds = new Rect(topLeft, border.Bounds.Size);
+            if (bounds.Right >= rect.Left && bounds.Left <= rect.Right && bounds.Bottom >= rect.Top && bounds.Top <= rect.Bottom)
+                selection.Add(channel.ChannelUrl);
+        }
+        _selectedChannelUrls.Clear();
+        _selectedChannelUrls.UnionWith(selection);
+        _isShowAllChannels = false;
+        foreach (var channel in _channels) channel.IsSelected = _selectedChannelUrls.Contains(channel.ChannelUrl);
+        ShowAllChannelsCard.Classes.Set("selected", false);
+    }
+
+    private void ChannelCard_Loaded(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Border border && !_channelCardVisuals.Contains(border)) _channelCardVisuals.Add(border);
+    }
+
+    private void ChannelCard_Unloaded(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Border border) _channelCardVisuals.Remove(border);
     }
 
     private void UpdateLasso(Point current)
@@ -814,6 +1054,79 @@ public partial class MainWindow : Window
         UpdateCards();
     }
 
+    private (Grid DateRow, Popup CalendarPopup) CreateDatePicker(TextBox dateInput)
+    {
+        var popupSurface = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#252832" : "#FFFFFF"));
+        var popupBorder = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#454955" : "#D9DBE3"));
+        var calendarForeground = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#F1F2F7" : "#202230"));
+        var selectedDate = DateTime.TryParseExact(dateInput.Text, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out var parsed) ? parsed : DateTime.Today;
+        var calendar = new Calendar { SelectedDate = selectedDate, DisplayDate = selectedDate, Background = popupSurface, Foreground = calendarForeground };
+        var calendarButton = new Button
+        {
+            Content = new TextBlock
+            {
+                Text = "\uE787", FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 20,
+                Foreground = new SolidColorBrush(Color.Parse("#7C5CFC")),
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            },
+            Width = 38, Height = 38, Padding = new Thickness(0), Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            HorizontalContentAlignment = Avalonia.Layout.HorizontalAlignment.Center,
+            VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center
+        };
+        ToolTip.SetTip(calendarButton, "날짜 선택");
+        var todayButton = new Button
+        {
+            Content = "오늘", HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            MinWidth = 64, Padding = new Thickness(12, 6),
+            Background = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#39324F" : "#F0EDFF")),
+            BorderBrush = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#5A4F7A" : "#D8D0FA")),
+            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(7),
+            Foreground = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#D2C8FF" : "#654CD3"))
+        };
+        var calendarPopup = new Popup
+        {
+            PlacementTarget = calendarButton,
+            Placement = PlacementMode.Bottom,
+            Child = new Border
+            {
+                Background = popupSurface, BorderBrush = popupBorder, BorderThickness = new Thickness(1),
+                Padding = new Thickness(6),
+                Child = new StackPanel { Spacing = 6, Children = { calendar, todayButton } }
+            }
+        };
+        void SetDate(DateTime date)
+        {
+            calendar.DisplayDate = date;
+            calendar.SelectedDate = date;
+            dateInput.Text = date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            calendarPopup.IsOpen = false;
+        }
+        todayButton.Click += (_, _) => SetDate(DateTime.Today);
+        calendarButton.Click += (_, _) =>
+        {
+            if (DateTime.TryParseExact(dateInput.Text?.Trim(), "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out var currentDate))
+            {
+                calendar.DisplayDate = currentDate;
+                calendar.SelectedDate = currentDate;
+            }
+            calendarPopup.IsOpen = !calendarPopup.IsOpen;
+        };
+        calendar.PropertyChanged += (_, args) =>
+        {
+            if (args.Property == Calendar.SelectedDateProperty && calendar.SelectedDate is { } date)
+                SetDate(date);
+        };
+        var dateRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,38"), ColumnSpacing = 8 };
+        dateRow.Children.Add(dateInput);
+        dateRow.Children.Add(calendarButton);
+        Grid.SetColumn(calendarButton, 1);
+        return (dateRow, calendarPopup);
+    }
+
     private async void EditSelected_Click(object? sender, RoutedEventArgs e)
     {
         var card = _allCards.SingleOrDefault(item => item.IsSelected && _visibleCards.Contains(item));
@@ -828,20 +1141,21 @@ public partial class MainWindow : Window
             PlaceholderText = "방송 날짜 (선택, YYYY-MM-DD)",
             MinHeight = 38
         };
+        var (dateRow, calendarPopup) = CreateDatePicker(dateInput);
         var error = new TextBlock { Foreground = Brushes.IndianRed, FontSize = 12, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
         var dialog = new Window
         {
             Title = "영상 수정",
-            Width = 520,
-            Height = 390,
-            MinWidth = 520,
-            MinHeight = 390,
-            MaxWidth = 520,
-            MaxHeight = 390,
+            Width = 500,
+            Height = 440,
+            MinWidth = 500,
+            MinHeight = 440,
+            MaxWidth = 500,
+            MaxHeight = 440,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
-        var chooseFile = new Button { Content = "추가", MinWidth = 66 };
+        var chooseFile = new Button { Content = "찾기", MinWidth = 66 };
         chooseFile.Click += async (_, _) =>
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -900,7 +1214,8 @@ public partial class MainWindow : Window
                     ColumnSpacing = 8,
                     Children = { filePathInput, chooseFile }
                 },
-                dateInput,
+                dateRow,
+                calendarPopup,
                 error,
                 new StackPanel
                 {
@@ -918,16 +1233,14 @@ public partial class MainWindow : Window
     private void GridView_Click(object? sender, RoutedEventArgs e)
     {
         _isListView = false;
-        ToolTip.SetTip(GridViewButton, "현재 그리드 보기");
-        ToolTip.SetTip(ListViewButton, "리스트 보기");
+        UpdateViewButtonStates();
         UpdateCards();
     }
 
     private void ListView_Click(object? sender, RoutedEventArgs e)
     {
         _isListView = true;
-        ToolTip.SetTip(GridViewButton, "그리드 보기");
-        ToolTip.SetTip(ListViewButton, "현재 리스트 보기");
+        UpdateViewButtonStates();
         UpdateCards();
     }
 
@@ -935,8 +1248,17 @@ public partial class MainWindow : Window
     {
         _showThumbnails = !_showThumbnails;
         foreach (var card in _allCards) card.ShowThumbnails = _showThumbnails;
-        ThumbnailViewButton.IsEnabled = true;
+        UpdateViewButtonStates();
+    }
+
+    private void UpdateViewButtonStates()
+    {
+        ThumbnailViewButton.Classes.Set("selected", _showThumbnails);
+        GridViewButton.Classes.Set("selected", !_isListView);
+        ListViewButton.Classes.Set("selected", _isListView);
         ToolTip.SetTip(ThumbnailViewButton, _showThumbnails ? "썸네일 숨기기" : "썸네일 표시");
+        ToolTip.SetTip(GridViewButton, _isListView ? "그리드 보기" : "현재 그리드 보기");
+        ToolTip.SetTip(ListViewButton, _isListView ? "현재 리스트 보기" : "리스트 보기");
     }
 
     private void WatchStatus_Click(object? sender, RoutedEventArgs e)
@@ -1065,29 +1387,118 @@ public partial class MainWindow : Window
 
     private async void MediaSource_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
-        if (sender is not TextBlock { DataContext: MediaCard card }) return;
+        if (sender is not Control { DataContext: MediaCard card }) return;
         e.Handled = true;
         foreach (var item in _allCards) item.IsSelected = ReferenceEquals(item, card);
         if (IsHttpUrl(card.OnlineUrl) && Uri.TryCreate(card.OnlineUrl, UriKind.Absolute, out var uri))
         {
-            await Launcher.LaunchUriAsync(uri);
+            var targetUri = card.WatchStatusLabel == "시청중"
+                ? AddVodStartPosition(uri, card.PlatformLabel, card.LastPositionSeconds)
+                : uri;
+            await Launcher.LaunchUriAsync(targetUri);
             return;
         }
 
-        OpenLocalFile(card.LocalFilePath);
+        OpenLocalFile(card);
     }
 
     private void MediaFile_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
-        if (sender is not TextBlock { DataContext: MediaCard card }) return;
+        if (sender is not Control { DataContext: MediaCard card }) return;
         e.Handled = true;
-        OpenLocalFile(card.LocalFilePath);
+        OpenLocalFile(card);
     }
 
-    private static void OpenLocalFile(string? path)
+    private static Uri AddVodStartPosition(Uri uri, string platform, double positionSeconds)
     {
-        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
-            Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+        var parameter = platform.Equals("SOOP", StringComparison.OrdinalIgnoreCase)
+            ? "change_second"
+            : platform.Equals("CHZZK", StringComparison.OrdinalIgnoreCase) || platform.Equals("치지직", StringComparison.OrdinalIgnoreCase)
+                ? "currentTime"
+                : null;
+        if (parameter is null) return uri;
+
+        var builder = new UriBuilder(uri);
+        var seconds = Math.Max(0, (long)Math.Floor(positionSeconds));
+        var queryParts = builder.Query.TrimStart('?')
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(part => !Uri.UnescapeDataString(part.Split('=', 2)[0]).Equals(parameter, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        queryParts.Add($"{parameter}={seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        builder.Query = string.Join('&', queryParts);
+        return builder.Uri;
+    }
+
+    private void OpenLocalFile(MediaCard card)
+    {
+        var path = card.LocalFilePath;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            ShowRefreshNotification("영상 파일을 찾을 수 없습니다.", isError: true);
+            return;
+        }
+
+        var playerPath = _settingsStore.LoadVideoPlayerPath();
+        try
+        {
+            if (string.IsNullOrWhiteSpace(playerPath))
+            {
+                Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+                return;
+            }
+            if (!File.Exists(playerPath))
+            {
+                ShowRefreshNotification("설정된 플레이어 실행 파일을 찾을 수 없습니다.", isError: true);
+                return;
+            }
+
+            var arguments = _settingsStore.LoadVideoPlayerArguments(playerPath);
+            var positionSeconds = card.WatchStatusLabel == "시청중" ? Math.Max(0, (long)Math.Floor(card.LastPositionSeconds)) : 0;
+            var positionTime = TimeSpan.FromSeconds(positionSeconds);
+            var positionHms = $"{(long)positionTime.TotalHours:00}:{positionTime.Minutes:00}:{positionTime.Seconds:00}";
+            var fileArgument = QuoteWindowsArgument(path);
+            var hasFilePlaceholder = arguments.Contains("{file}", StringComparison.OrdinalIgnoreCase);
+            arguments = arguments.Replace("\"{file}\"", fileArgument, StringComparison.OrdinalIgnoreCase)
+                .Replace("{file}", fileArgument, StringComparison.OrdinalIgnoreCase)
+                .Replace("{position_hms}", positionHms, StringComparison.OrdinalIgnoreCase)
+                .Replace("{position}", positionSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+            if (!hasFilePlaceholder) arguments = string.IsNullOrWhiteSpace(arguments) ? fileArgument : $"{arguments} {fileArgument}";
+
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = playerPath,
+                Arguments = arguments,
+                UseShellExecute = false
+            });
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or ArgumentException or FileNotFoundException)
+        {
+            ShowRefreshNotification($"플레이어를 실행하지 못했습니다: {exception.Message}", isError: true);
+        }
+    }
+
+    private static string QuoteWindowsArgument(string value)
+    {
+        var result = new System.Text.StringBuilder("\"");
+        var backslashes = 0;
+        foreach (var character in value)
+        {
+            if (character == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+            if (character == '"')
+            {
+                result.Append('\\', backslashes * 2 + 1).Append('"');
+                backslashes = 0;
+                continue;
+            }
+            result.Append('\\', backslashes).Append(character);
+            backslashes = 0;
+        }
+        result.Append('\\', backslashes * 2).Append('"');
+        return result.ToString();
     }
 
     private async Task DetectLocalDurationAsync(MediaCard card)
@@ -1191,7 +1602,9 @@ public partial class MainWindow : Window
         if (!_durationRefreshInProgress.Add(channel.ChannelUrl)) return;
         try
         {
-            var channelCards = cardsToRefresh?.ToArray() ?? _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray();
+            var channelCards = (cardsToRefresh?.ToArray() ?? _visibleCards.Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray())
+                .Where(card => !card.HasKnownDuration)
+                .ToArray();
             if (channel.Platform == "SOOP")
             {
                 await Task.WhenAll(channelCards.Select(async card =>
@@ -1402,11 +1815,13 @@ public partial class MainWindow : Window
     {
         if (_selectedChannel is null) return;
         var button = sender as Button;
+        var addedCards = new List<MediaCard>();
         if (button is not null) button.IsEnabled = false;
         try
         {
             var channel = _selectedChannel;
             var foundVideos = await FetchChannelVideosAsync(channel);
+            if (!_channels.Contains(channel)) return;
             if (channel.Platform == "SOOP")
             {
                 _soopNextPageByChannel[channel.ChannelUrl] = 2;
@@ -1433,6 +1848,7 @@ public partial class MainWindow : Window
                     "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl,
                     durationSeconds: video.DurationSeconds);
                 _allCards.Add(card);
+                addedCards.Add(card);
                 if (card.PlatformLabel == "SOOP" && !card.HasKnownDuration)
                     _ = RefreshCardDurationAsync(card);
                 _ = RefreshCardThumbnailAsync(card, video.ThumbnailUrl);
@@ -1442,17 +1858,32 @@ public partial class MainWindow : Window
                                                           !foundVideos.Any(video => string.Equals(video.Url.TrimEnd('/'), card.OnlineUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) && video.DurationSeconds is > 0)))
                 _ = DetectLocalDurationAsync(card);
             SaveChannel(channel);
-            if (button is not null) ToolTip.SetTip(button, addedCount == 0 ? "새 영상이 없습니다" : $"새 영상 {addedCount}개 추가");
             UpdateCards();
+            ShowRefreshNotification(addedCount == 0 ? "새로고침 할 내용 없음" : $"새로고침 완료 · 새 영상 {addedCount}개 추가");
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+        catch (Exception)
         {
-            if (button is not null) ToolTip.SetTip(button, "새로고침 실패");
+            foreach (var card in addedCards)
+            {
+                _allCards.Remove(card);
+                card.Dispose();
+            }
+            UpdateCards();
+            ShowRefreshNotification("새로고침 실패", isError: true);
         }
         finally
         {
             if (button is not null) button.IsEnabled = true;
         }
+    }
+
+    private void ShowRefreshNotification(string message, bool isError = false)
+    {
+        RefreshNotificationText.Text = message;
+        RefreshNotification.BorderBrush = new SolidColorBrush(Color.Parse(isError ? "#E05D68" : "#35B879"));
+        RefreshNotification.IsVisible = true;
+        _refreshNotificationTimer.Stop();
+        _refreshNotificationTimer.Start();
     }
 
     private async void CardsScroller_ScrollChanged(object? sender, ScrollChangedEventArgs e)
@@ -1464,6 +1895,12 @@ public partial class MainWindow : Window
         {
             _cardDisplayLimit += CardDisplayBatchSize;
             UpdateCards();
+            foreach (var group in _visibleCards.Where(card => !card.HasKnownDuration && !string.IsNullOrWhiteSpace(card.ChannelUrl))
+                         .GroupBy(card => card.ChannelUrl!))
+            {
+                if (_channels.FirstOrDefault(channel => channel.ChannelUrl == group.Key) is { } owner)
+                    _ = RefreshChannelDurationsAsync(owner, group.ToArray());
+            }
             return;
         }
         var channel = _selectedChannel;
@@ -1473,6 +1910,7 @@ public partial class MainWindow : Window
         {
             var page = _soopNextPageByChannel.GetValueOrDefault(channel.ChannelUrl, 2);
             var videos = await FetchChannelVideosAsync(channel, page);
+            if (!_channels.Contains(channel)) return;
             foreach (var video in videos)
             {
                 if (_allCards.Any(card => string.Equals(card.OnlineUrl?.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))) continue;
@@ -1515,7 +1953,7 @@ public partial class MainWindow : Window
             var url = $"https://chapi.sooplive.com/api/{Uri.EscapeDataString(channelId)}/vods/all/streamer?page={page}&per_page={pageSize}&orderby=reg_date";
             using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url));
             if (!json.RootElement.TryGetProperty("data", out var data) || data.ValueKind != System.Text.Json.JsonValueKind.Array)
-                return videos;
+                throw new InvalidOperationException("The SOOP VOD response did not contain a valid data list.");
             foreach (var item in data.EnumerateArray())
             {
                 var id = item.TryGetProperty("title_no", out var titleNo) ? titleNo.ToString() : null;
@@ -1534,7 +1972,9 @@ public partial class MainWindow : Window
             var url = $"https://api.chzzk.naver.com/service/v1/channels/{Uri.EscapeDataString(channelId)}/videos?sortType=LATEST&pagingType=PAGE&page={page}&size=30";
             using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url));
             if (!json.RootElement.TryGetProperty("content", out var content) ||
-                !content.TryGetProperty("data", out var data) || data.ValueKind != System.Text.Json.JsonValueKind.Array || data.GetArrayLength() == 0) break;
+                !content.TryGetProperty("data", out var data) || data.ValueKind != System.Text.Json.JsonValueKind.Array)
+                throw new InvalidOperationException("The CHZZK VOD response did not contain a valid content list.");
+            if (data.GetArrayLength() == 0) break;
             foreach (var item in data.EnumerateArray())
             {
                 var id = item.TryGetProperty("videoNo", out var videoNo) ? videoNo.ToString() : null;
@@ -1612,14 +2052,21 @@ public partial class MainWindow : Window
             VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Center
         };
         ToolTip.SetTip(calendarButton, "날짜 선택");
-        var calendar = new Calendar { SelectedDate = DateTime.Today };
+        var popupSurface = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#252832" : "#FFFFFF"));
+        var popupBorder = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#454955" : "#D9DBE3"));
+        var calendarForeground = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#F1F2F7" : "#202230"));
+        var calendar = new Calendar { SelectedDate = DateTime.Today, Background = popupSurface, Foreground = calendarForeground };
         var todayButton = new Button
         {
             Content = "오늘",
             HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
             MinWidth = 64,
             Padding = new Thickness(12, 6),
-            Foreground = new SolidColorBrush(Color.Parse("#7C5CFC"))
+            Background = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#39324F" : "#F0EDFF")),
+            BorderBrush = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#5A4F7A" : "#D8D0FA")),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Foreground = new SolidColorBrush(Color.Parse(_isDarkTheme ? "#D2C8FF" : "#654CD3"))
         };
         var calendarPopup = new Popup
         {
@@ -1627,8 +2074,8 @@ public partial class MainWindow : Window
             Placement = PlacementMode.Bottom,
             Child = new Border
             {
-                Background = Brushes.White,
-                BorderBrush = Brushes.LightGray,
+                Background = popupSurface,
+                BorderBrush = popupBorder,
                 BorderThickness = new Thickness(1),
                 Padding = new Thickness(6),
                 Child = new StackPanel
@@ -1675,8 +2122,8 @@ public partial class MainWindow : Window
             MaxWidth = 500, MaxHeight = 440, CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
         var cancel = new Button { Content = "취소", MinWidth = 82, IsCancel = true };
-        var save = new Button { Content = "추가", MinWidth = 82, IsDefault = true };
-        var chooseFile = new Button { Content = "추가" };
+        var save = new Button { Content = "추가", MinWidth = 82, Classes = { "primary" }, IsDefault = true };
+        var chooseFile = new Button { Content = "찾기", MinWidth = 66 };
         chooseFile.Click += async (_, _) =>
         {
             var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -1793,14 +2240,14 @@ public partial class MainWindow : Window
         };
         var message = new TextBlock { FontSize = 11, TextWrapping = Avalonia.Media.TextWrapping.Wrap, Foreground = Avalonia.Media.Brushes.Gray };
         var lookupButton = new Button { Content = "채널 정보 불러오기", MinHeight = 36 };
-        lookupButton.Click += async (_, _) =>
+        async Task<bool> LookupProfileAsync()
         {
             var platformKey = platformPicker.SelectedIndex == 1 ? "SOOP" : "CHZZK";
             if (!TryCreateChannelUrl(platformKey, channelIdInput.Text, out var lookupUri, out var error))
             {
                 message.Text = error;
                 message.Foreground = Avalonia.Media.Brushes.IndianRed;
-                return;
+                return false;
             }
 
             var channelId = GetPlatformChannelId(platformKey, lookupUri!);
@@ -1816,19 +2263,23 @@ public partial class MainWindow : Window
                 profileLookupSucceeded = true;
                 message.Text = $"{platformKey} 채널명과 설명을 불러왔습니다.";
                 message.Foreground = Avalonia.Media.Brushes.DarkGreen;
+                return true;
             }
             catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
             {
-                message.Text = exception is TaskCanceledException
+                var failure = exception is TaskCanceledException
                     ? $"{platformKey} 요청 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요."
                     : $"{platformKey} 채널 정보를 가져오지 못했습니다. ID 또는 네트워크 연결을 확인해 주세요.";
+                message.Text = $"채널 ID 또는 전체 주소를 확인해 주세요. {failure}";
                 message.Foreground = Avalonia.Media.Brushes.IndianRed;
+                return false;
             }
             finally
             {
                 lookupButton.IsEnabled = true;
             }
-        };
+        }
+        lookupButton.Click += async (_, _) => await LookupProfileAsync();
 
         var cancelButton = new Button { Content = "취소", MinWidth = 82, IsCancel = true };
         var saveButton = new Button { Content = "채널 추가", MinWidth = 92, IsDefault = true };
@@ -1856,16 +2307,24 @@ public partial class MainWindow : Window
                 return;
             }
             var channelId = GetPlatformChannelId(platformKey, channelUri!);
-            var name = nameInput.Text?.Trim();
-            if (string.IsNullOrWhiteSpace(name))
-            {
-                message.Text = "채널명을 입력하거나 채널 정보 불러오기를 눌러 주세요.";
-                message.Foreground = Avalonia.Media.Brushes.IndianRed;
-                return;
-            }
             if (_channels.Any(channel => channel.Platform == platform && channel.ChannelUrl == channelUri!.AbsoluteUri))
             {
                 message.Text = "이미 등록된 채널 ID입니다.";
+                message.Foreground = Avalonia.Media.Brushes.IndianRed;
+                return;
+            }
+
+            if (!profileLookupSucceeded)
+            {
+                saveButton.IsEnabled = false;
+                var lookupSucceeded = await LookupProfileAsync();
+                saveButton.IsEnabled = true;
+                if (!lookupSucceeded) return;
+            }
+            var name = nameInput.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                message.Text = "채널 ID 또는 전체 주소를 확인해 주세요. 채널명을 가져오지 못했습니다.";
                 message.Foreground = Avalonia.Media.Brushes.IndianRed;
                 return;
             }
@@ -1975,8 +2434,14 @@ public partial class MainWindow : Window
                 var root = json.RootElement;
                 if (platform == "CHZZK")
                 {
+                    if (!root.TryGetProperty("code", out var responseCode) || !IsChzzkSuccessCode(responseCode))
+                        throw new InvalidOperationException("CHZZK profile response did not indicate success.");
                     if (!root.TryGetProperty("content", out var content) || content.ValueKind != System.Text.Json.JsonValueKind.Object)
                         throw new InvalidOperationException("Channel content missing.");
+                    var responseChannelId = content.TryGetProperty("channelId", out var channelIdValue) ? channelIdValue.GetString() : null;
+                    if (string.IsNullOrWhiteSpace(responseChannelId) ||
+                        !responseChannelId.Equals(channelId, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("CHZZK response channel ID did not match the requested ID.");
                     var name = content.TryGetProperty("channelName", out var channelName) ? channelName.GetString() : null;
                     if (string.IsNullOrWhiteSpace(name)) throw new InvalidOperationException("Channel name missing.");
                     var description = content.TryGetProperty("channelDescription", out var channelDescription)
@@ -1991,6 +2456,11 @@ public partial class MainWindow : Window
 
                 if (!root.TryGetProperty("station", out var station) || station.ValueKind != System.Text.Json.JsonValueKind.Object)
                     throw new InvalidOperationException("SOOP station data missing.");
+                var responseSoopId = ReadFirstString(station, "user_id", "userId", "station_user_id", "stationUserId", "bj_id", "bjId")
+                    ?? ReadFirstString(root, "user_id", "userId", "station_user_id", "stationUserId", "bj_id", "bjId");
+                if (string.IsNullOrWhiteSpace(responseSoopId) ||
+                    !responseSoopId.Equals(channelId, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("SOOP response channel ID did not match the requested ID.");
                 var soopName = station.TryGetProperty("user_nick", out var userNick) ? userNick.GetString() : null;
                 if (string.IsNullOrWhiteSpace(soopName) && station.TryGetProperty("station_name", out var stationName))
                     soopName = stationName.GetString();
@@ -2015,6 +2485,26 @@ public partial class MainWindow : Window
         }
 
         throw new HttpRequestException("No channel profile endpoint returned usable data.", lastError);
+    }
+
+    private static bool IsChzzkSuccessCode(System.Text.Json.JsonElement code) => code.ValueKind switch
+    {
+        System.Text.Json.JsonValueKind.Number => code.TryGetInt32(out var number) && number == 200,
+        System.Text.Json.JsonValueKind.String => string.Equals(code.GetString(), "200", StringComparison.Ordinal),
+        _ => false
+    };
+
+    private static string? ReadFirstString(System.Text.Json.JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (element.TryGetProperty(propertyName, out var property) && property.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                var value = property.GetString();
+                if (!string.IsNullOrWhiteSpace(value)) return value;
+            }
+        }
+        return null;
     }
 
     private static bool IsPositiveNumber(System.Text.Json.JsonElement value) => value.ValueKind switch
@@ -2081,7 +2571,7 @@ public partial class MainWindow : Window
     private async void OpenSettings_Click(object? sender, RoutedEventArgs e)
     {
         if (!OperatingSystem.IsWindows()) return;
-        var settings = new SettingsWindow(_isDarkTheme, ApplyTheme);
+        var settings = new SettingsWindow(_isDarkTheme, ApplyTheme, _settingsStore);
         await settings.ShowDialog(this);
     }
 
@@ -2308,9 +2798,8 @@ public partial class MainWindow : Window
         var digitDateQuery = query is null ? "" : new string(query.Where(char.IsDigit).ToArray());
         var statusFilter = StatusFilter?.SelectedIndex ?? 0;
         var matchingCards = _allCards.Where(card =>
-            (_isAllLibraryView || _selectedChannel is not null) &&
+            (_isShowAllChannels || _selectedChannelUrls.Contains(card.ChannelUrl ?? string.Empty)) &&
             (selectedPlatform is null || card.PlatformLabel == selectedPlatform) &&
-            (_isAllLibraryView || card.ChannelUrl == _selectedChannel!.ChannelUrl) &&
             (string.IsNullOrWhiteSpace(query) ||
              card.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
              card.PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
@@ -2364,20 +2853,30 @@ public partial class MainWindow : Window
         var hasCards = _visibleCards.Count > 0;
         foreach (var card in _visibleCards) card.ShowThumbnails = _showThumbnails;
         EmptyState.IsVisible = !hasCards;
-        EmptyStateTitle.Text = _selectedChannel is null ? "채널을 추가하거나 선택해주세요" : "아직 등록된 영상이 없습니다";
-        EmptyStateDescription.Text = _selectedChannel is null
-            ? "왼쪽 채널 목록에서 채널을 선택하거나 새 채널을 추가해 주세요."
-            : "위쪽 추가 버튼으로 다시보기를 등록하거나 새로고침을 눌러 불러오세요.";
+        var hasChannelScope = _isShowAllChannels || _selectedChannelUrls.Count > 0;
+        DeleteChannelsButton.IsVisible = !_isShowAllChannels && _selectedChannelUrls.Count > 0;
+        EmptyStateTitle.Text = hasChannelScope ? "\uC544\uC9C1 \uB4F1\uB85D\uB41C \uC601\uC0C1\uC774 \uC5C6\uC2B5\uB2C8\uB2E4" : "\uCC44\uB110\uC744 \uCD94\uAC00\uD558\uAC70\uB098 \uC120\uD0DD\uD574\uC8FC\uC138\uC694";
+        EmptyStateDescription.Text = !hasChannelScope
+            ? "\uC67C\uCABD \uCC44\uB110 \uBAA9\uB85D\uC5D0\uC11C \uCC44\uB110\uC744 \uC120\uD0DD\uD558\uAC70\uB098 \uC0C8 \uCC44\uB110\uC744 \uCD94\uAC00\uD574 \uC8FC\uC138\uC694."
+            : "\uC67C\uCABD \uCD94\uAC00 \uBC84\uD2BC\uC73C\uB85C \uB2E4\uC2DC\uBCF4\uAE30\uB97C \uB4F1\uB85D\uD558\uAC70\uB098 \uC0C8\uB85C\uACE0\uCE68\uC744 \uB20C\uB7EC \uBD88\uB7EC\uC624\uC138\uC694.";
         CardsScroller.IsVisible = hasCards && !_isListView;
         CardsListScroller.IsVisible = hasCards && _isListView;
-        ChannelActionBar.IsVisible = _selectedChannel is not null;
-        ChannelEmptyActions.IsVisible = false;
+        ChannelActionBar.IsVisible = hasChannelScope;
+        var hasSingleChannelContext = _selectedChannel is not null && _selectedChannelUrls.Count == 1 && !_isShowAllChannels;
+        ChannelEmptyActions.IsVisible = !hasCards && hasSingleChannelContext;
+        EmptyStateChannelAddButton.IsVisible = !hasChannelScope;
+        if (_selectedChannel is { } emptyChannel)
+            EmptyStatePlatformRefreshButton.Content = emptyChannel.Platform == "SOOP" ? "SOOP에서 불러오기" : "치지직에서 불러오기";
+        EmptyStatePlatformRefreshButton.IsEnabled = hasSingleChannelContext;
         EmptyStateAddButton.IsVisible = false;
-        RefreshChannelButton.IsVisible = _selectedChannel is not null;
-        DirectAddButton.IsVisible = _selectedChannel is not null;
-        ThumbnailViewButton.IsVisible = _selectedChannel is not null;
-        GridViewButton.IsVisible = _selectedChannel is not null;
-        ListViewButton.IsVisible = _selectedChannel is not null;
+        RefreshChannelButton.IsVisible = true;
+        RefreshChannelButton.IsEnabled = hasSingleChannelContext;
+        DirectAddButton.IsVisible = true;
+        DirectAddButton.IsEnabled = hasSingleChannelContext;
+        ThumbnailViewButton.IsVisible = hasChannelScope;
+        GridViewButton.IsVisible = hasChannelScope;
+        ListViewButton.IsVisible = hasChannelScope;
+        ShowAllChannelsCard.Classes.Set("selected", _isShowAllChannels);
     }
 
     private void UpdateVisibleChannels()
@@ -2461,6 +2960,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public string AvailabilityLabel => _availabilityLabel;
     public string SourceValue => _onlineUrl ?? _localFilePath ?? "";
     public string? OnlineUrl => _onlineUrl;
+    public bool HasOnlineUrl => !string.IsNullOrWhiteSpace(_onlineUrl);
     public string? LocalFilePath => _localFilePath;
     public string VodId => _vodId;
     public double LastPositionSeconds => _lastPositionSeconds;
@@ -2531,6 +3031,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         OnPropertyChanged(nameof(PublishedAt));
         OnPropertyChanged(nameof(PublishedAtLabel));
         OnPropertyChanged(nameof(OnlineUrl));
+        OnPropertyChanged(nameof(HasOnlineUrl));
         OnPropertyChanged(nameof(LocalFilePath));
         OnPropertyChanged(nameof(LocalFilePathLabel));
         OnPropertyChanged(nameof(HasLocalFilePath));
@@ -2598,8 +3099,9 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
 
     public IBrush CardBorderBrush => IsSelected
         ? new SolidColorBrush(Color.Parse(PlatformLabel == "SOOP" ? "#398FE0" : "#35B879"))
-        : new SolidColorBrush(Color.Parse("#E5E6ED"));
+        : new SolidColorBrush(Color.Parse(MainWindow.UnselectedCardBorderColor));
     public Thickness CardBorderThickness => new(IsSelected ? 2 : 1);
+    public void RefreshTheme() => OnPropertyChanged(nameof(CardBorderBrush));
     public string PublishedAtLabel => PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd") ?? "";
     public void SetDuration(double? seconds)
     {
@@ -2727,6 +3229,7 @@ public sealed class ChannelEntry : System.ComponentModel.INotifyPropertyChanged,
 
     public string Platform { get; }
     public string ChannelId { get; }
+    public IBrush PlatformBadgeBackground => new SolidColorBrush(Color.Parse(Platform == "SOOP" ? "#398FE0" : "#35B879"));
     public string DisplayName
     {
         get => _displayName;
@@ -2759,8 +3262,9 @@ public sealed class ChannelEntry : System.ComponentModel.INotifyPropertyChanged,
         : new SolidColorBrush(Color.Parse("#D8DBE4"));
     public IBrush CardBorderBrush => IsSelected
         ? new SolidColorBrush(Color.Parse(Platform == "SOOP" ? "#398FE0" : "#35B879"))
-        : new SolidColorBrush(Color.Parse("#E5E6ED"));
+        : new SolidColorBrush(Color.Parse(MainWindow.UnselectedCardBorderColor));
     public Thickness CardBorderThickness => new(IsSelected ? 2 : 1);
+    public void RefreshTheme() => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(CardBorderBrush)));
 
     public bool IsSelected
     {
