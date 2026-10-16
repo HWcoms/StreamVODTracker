@@ -7,10 +7,12 @@
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
         <AssemblyName>VODTracker.Desktop</AssemblyName>
         <RootNamespace>VODTracker.Desktop</RootNamespace>
+        <ApplicationIcon>..\assets\app-icon.ico</ApplicationIcon>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
 
     <ItemGroup>
+        <AvaloniaResource Include="..\assets\app-icon.ico" Link="Assets\app-icon.ico" />
         <PackageReference Include="Avalonia" />
         <PackageReference Include="Avalonia.Desktop" />
         <PackageReference Include="Avalonia.Themes.Fluent" />

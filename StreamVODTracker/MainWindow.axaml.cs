@@ -25,6 +25,8 @@ public partial class MainWindow : Window
     private readonly AppSettingsStore _settingsStore = new(AppContext.BaseDirectory);
     private readonly List<Border> _cardVisuals = [];
     private readonly HashSet<MediaCard> _dragSelectionBase = [];
+    private readonly HashSet<string> _durationRefreshInProgress = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly SemaphoreSlim SoopDurationLoadLimiter = new(4);
     private readonly LocalCsvDatabase _localDatabase;
     private readonly IVodRepository _vodRepository;
     private static readonly SemaphoreSlim ThumbnailLoadLimiter = new(4);
@@ -168,6 +170,7 @@ public partial class MainWindow : Window
                     item.PublishedAt, item.ThumbnailUrl, item.ThumbnailPath, item.OnlineUrl, item.LocalFilePath,
                     item.VodId, item.LastPositionSeconds, item.Memo, item.UpdatedAt);
                 _allCards.Add(card);
+                if (card.HasLocalFilePath) _ = DetectLocalDurationAsync(card);
                 if (!string.IsNullOrWhiteSpace(item.ThumbnailPath) && File.Exists(item.ThumbnailPath))
                 {
                     try { card.SetThumbnail(new Bitmap(item.ThumbnailPath)); }
@@ -488,6 +491,7 @@ public partial class MainWindow : Window
         var filePath = file.Path.LocalPath;
         _allCards.Add(new MediaCard(Path.GetFileNameWithoutExtension(file.Name), platform, "PC 파일",
             file.Name, "파일 확인됨", "안 봄", filePath));
+        _ = DetectLocalDurationAsync(_allCards[^1]);
         UpdateCards();
     }
 
@@ -498,6 +502,7 @@ public partial class MainWindow : Window
         foreach (var channel in _channels) channel.IsSelected = ReferenceEquals(channel, selectedChannel);
         PlatformTabs.SelectedIndex = selectedChannel.Platform == "SOOP" ? 1 : 0;
         UpdateCards();
+        _ = RefreshChannelDurationsAsync(selectedChannel);
     }
 
     private async void ChannelAvatar_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
@@ -509,6 +514,7 @@ public partial class MainWindow : Window
         foreach (var item in _channels) item.IsSelected = ReferenceEquals(item, channel);
         PlatformTabs.SelectedIndex = channel.Platform == "SOOP" ? 1 : 0;
         UpdateCards();
+        _ = RefreshChannelDurationsAsync(channel);
         await Launcher.LaunchUriAsync(uri);
     }
 
@@ -521,7 +527,7 @@ public partial class MainWindow : Window
         if (sender is not Border { DataContext: MediaCard selectedCard }) return;
         // Let interactive controls inside the card receive their normal click events.
         // Marking the pointer press handled here prevents Button.Click from firing.
-        if (IsInsideButton(e.Source)) return;
+        if (IsInsideButton(e.Source) || IsInsideInput(e.Source)) return;
 
         var modifiers = e.KeyModifiers;
         if (modifiers.HasFlag(KeyModifiers.Shift))
@@ -554,7 +560,8 @@ public partial class MainWindow : Window
     {
         if (!e.GetCurrentPoint(CardsArea).Properties.IsLeftButtonPressed ||
             e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Shift) ||
-            IsInsideScrollBar(e.Source) || IsInsideButton(e.Source) || e.Source is TextBlock { Cursor: not null }) return;
+            IsInsideScrollBar(e.Source) || IsInsideButton(e.Source) || IsInsideInput(e.Source) || IsInsidePlaybackProgress(e.Source) ||
+            e.Source is TextBlock { Cursor: not null }) return;
 
         var pressedCard = (e.Source as Control)?.DataContext as MediaCard;
         if (pressedCard is null)
@@ -580,6 +587,20 @@ public partial class MainWindow : Window
     {
         for (var visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
             if (visual is Button) return true;
+        return false;
+    }
+
+    private static bool IsInsideInput(object? source)
+    {
+        for (var visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
+            if (visual is TextBox or Slider) return true;
+        return false;
+    }
+
+    private static bool IsInsidePlaybackProgress(object? source)
+    {
+        for (var visual = source as Visual; visual is not null; visual = visual.GetVisualParent())
+            if (visual is Control control && control.Classes.Contains("playback-progress")) return true;
         return false;
     }
 
@@ -827,6 +848,7 @@ public partial class MainWindow : Window
             }
 
             card.UpdateDetails(title, publishedAt, address, filePath);
+            _ = RefreshCardDurationAsync(card);
             if (card.ChannelUrl is not null && _channels.FirstOrDefault(item => item.ChannelUrl == card.ChannelUrl) is { } channel)
                 SaveChannel(channel);
             UpdateCards();
@@ -892,10 +914,113 @@ public partial class MainWindow : Window
         if (sender is Button { DataContext: MediaCard card })
         {
             card.CycleWatchStatus();
+            if (card.IsLastPositionVisible && !card.HasKnownDuration)
+                _ = RefreshDurationForWatchingCardAsync(card);
             if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
                 SaveChannel(channel);
             UpdateCards();
         }
+    }
+
+    private void LastPositionInput_TextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (sender is not TextBox input || input.DataContext is not MediaCard card) return;
+        if (card.IsPositionSliderInteracting) return;
+        if (input.Tag is string part) card.SetLastPositionPart(part, input.Text ?? "");
+    }
+
+    private void LastPositionInput_LostFocus(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not TextBox input || input.DataContext is not MediaCard card) return;
+        if (input.Text is { Length: 1 } digit && char.IsAsciiDigit(digit[0]))
+            input.Text = $"0{digit}";
+        Dispatcher.UIThread.Post(() =>
+        {
+            var focused = TopLevel.GetTopLevel(input)?.FocusManager?.GetFocusedElement();
+            if (focused is TextBox { DataContext: MediaCard focusedCard, Tag: string tag } &&
+                ReferenceEquals(focusedCard, card) && tag is "hours" or "minutes" or "seconds") return;
+            if (!card.CommitPositionInput()) return;
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+                SaveChannel(channel);
+        });
+    }
+
+    private void PlaybackPositionSlider_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is Control { DataContext: MediaCard card } control && e.GetCurrentPoint(control).Properties.IsLeftButtonPressed)
+        {
+            card.BeginPositionSliderInteraction();
+            card.SetPlaybackProgressDragging(true);
+            control.Focus();
+            e.Pointer.Capture(control);
+            UpdatePlaybackPositionFromPointer(control, card, e.GetPosition(control).X);
+            e.Handled = true;
+        }
+    }
+
+    private void PlaybackPositionSlider_PointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (sender is not Control { DataContext: MediaCard card }) return;
+        e.Pointer.Capture(null);
+        card.SetPlaybackProgressDragging(false);
+        if (card.EndPositionSliderInteraction() && card.ChannelUrl is not null &&
+            _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+            SaveChannel(channel);
+        e.Handled = true;
+    }
+
+    private void PlaybackPositionSlider_PointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (sender is not Control { DataContext: MediaCard card } control || !card.IsPositionSliderInteracting) return;
+        UpdatePlaybackPositionFromPointer(control, card, e.GetPosition(control).X);
+        e.Handled = true;
+    }
+
+    private static void UpdatePlaybackPositionFromPointer(Control control, MediaCard card, double pointerX)
+    {
+        if (control.Bounds.Width <= 0 || card.DurationSeconds is not > 0) return;
+        var progress = Math.Clamp(pointerX / control.Bounds.Width, 0, 1);
+        card.PlaybackPositionSliderValue = progress * card.DurationSeconds.Value;
+    }
+
+    private void PlaybackPositionSlider_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender is Control { DataContext: MediaCard card } && !card.IsPositionSliderInteracting && IsSliderAdjustmentKey(e.Key))
+        {
+            card.BeginPositionSliderInteraction();
+            card.SetPlaybackProgressDragging(true);
+        }
+    }
+
+    private void PlaybackPositionSlider_KeyUp(object? sender, KeyEventArgs e)
+    {
+        if (sender is not Control { DataContext: MediaCard card } || !IsSliderAdjustmentKey(e.Key)) return;
+        card.SetPlaybackProgressDragging(false);
+        if (card.EndPositionSliderInteraction() && card.ChannelUrl is not null &&
+            _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+            SaveChannel(channel);
+    }
+
+    private void PlaybackProgress_PointerEntered(object? sender, PointerEventArgs e)
+    {
+        if (sender is Control { DataContext: MediaCard card }) card.SetPlaybackProgressHovered(true);
+    }
+
+    private void PlaybackProgress_PointerExited(object? sender, PointerEventArgs e)
+    {
+        if (sender is Control { DataContext: MediaCard card }) card.SetPlaybackProgressPointerOver(false);
+    }
+
+    private static bool IsSliderAdjustmentKey(Key key) => key is Key.Left or Key.Right or Key.Up or Key.Down or Key.Home or Key.End or Key.PageUp or Key.PageDown;
+
+    private void LastPositionInput_TextInput(object? sender, TextInputEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(e.Text) && e.Text.Any(character => !char.IsAsciiDigit(character))) e.Handled = true;
+    }
+
+    private void LastPositionInput_GotFocus(object? sender, RoutedEventArgs e)
+    {
+        if (sender is TextBox input) input.SelectAll();
     }
 
     private async void MediaSource_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
@@ -923,6 +1048,172 @@ public partial class MainWindow : Window
     {
         if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
             Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+    }
+
+    private async Task DetectLocalDurationAsync(MediaCard card)
+    {
+        var path = card.LocalFilePath;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        try
+        {
+            var start = new ProcessStartInfo
+            {
+                FileName = "ffprobe",
+                ArgumentList = { "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path },
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            using var process = Process.Start(start);
+            if (process is null) return;
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0 || !double.TryParse(output.Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var seconds) || seconds <= 0) return;
+            if (!string.Equals(card.LocalFilePath, path, StringComparison.OrdinalIgnoreCase)) return;
+            card.SetDuration(seconds);
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+                SaveChannel(channel);
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            // ffprobe is optional; keep the duration unknown when it is unavailable.
+        }
+    }
+
+    private async Task RefreshCardDurationAsync(MediaCard card)
+    {
+        var onlineUrl = card.OnlineUrl;
+        var localPath = card.LocalFilePath;
+        if (!string.IsNullOrWhiteSpace(onlineUrl) && IsHttpUrl(onlineUrl) && card.ChannelUrl is not null &&
+            _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+        {
+            try
+            {
+                var videos = await FetchChannelVideosAsync(channel);
+                var match = videos.FirstOrDefault(video => string.Equals(video.Url.TrimEnd('/'), onlineUrl!.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+                var duration = card.PlatformLabel == "SOOP"
+                    ? await FetchSoopVodDurationAsync(onlineUrl)
+                    : match.DurationSeconds;
+                if (duration is > 0 && string.Equals(card.OnlineUrl, onlineUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    card.SetDuration(duration);
+                    SaveChannel(channel);
+                    return;
+                }
+            }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+            {
+                // Fall back to local media when the channel metadata cannot be refreshed.
+            }
+        }
+        if (string.Equals(card.LocalFilePath, localPath, StringComparison.OrdinalIgnoreCase) && card.HasLocalFilePath)
+            await DetectLocalDurationAsync(card);
+    }
+
+    private async Task RefreshDurationForWatchingCardAsync(MediaCard card)
+    {
+        var onlineUrl = card.OnlineUrl;
+        double? duration = card.PlatformLabel == "SOOP"
+            ? await FetchSoopVodDurationAsync(onlineUrl)
+            : null;
+        if (duration is null && card.PlatformLabel != "SOOP")
+        {
+            await RefreshCardDurationAsync(card);
+            return;
+        }
+        if (duration is > 0 && string.Equals(card.OnlineUrl, onlineUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            card.SetDuration(duration);
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+                SaveChannel(channel);
+        }
+    }
+
+    private async Task RefreshChannelDurationsAsync(ChannelEntry channel)
+    {
+        if (!_durationRefreshInProgress.Add(channel.ChannelUrl)) return;
+        try
+        {
+            var videos = await FetchChannelVideosAsync(channel);
+            var channelCards = _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray();
+            await Task.WhenAll(channelCards.Select(async card =>
+            {
+                var match = videos.FirstOrDefault(video => string.Equals(video.Url.TrimEnd('/'), card.OnlineUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+                var duration = card.PlatformLabel == "SOOP"
+                    ? await FetchSoopVodDurationAsync(card.OnlineUrl)
+                    : match.DurationSeconds;
+                if (duration is > 0)
+                    card.SetDuration(duration);
+                else if (card.HasLocalFilePath)
+                    await DetectLocalDurationAsync(card);
+            }));
+            SaveChannel(channel);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            foreach (var card in _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl && card.HasLocalFilePath))
+                _ = DetectLocalDurationAsync(card);
+        }
+        finally
+        {
+            _durationRefreshInProgress.Remove(channel.ChannelUrl);
+        }
+    }
+
+    private static async Task<double?> FetchSoopVodDurationAsync(string? vodUrl)
+    {
+        if (!Uri.TryCreate(vodUrl, UriKind.Absolute, out var uri)) return null;
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var playerIndex = Array.FindIndex(segments, segment => segment.Equals("player", StringComparison.OrdinalIgnoreCase));
+        if (playerIndex < 0 || playerIndex + 1 >= segments.Length || !long.TryParse(segments[playerIndex + 1], out _)) return null;
+
+        await SoopDurationLoadLimiter.WaitAsync();
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.m.sooplive.com/station/video/a/view")
+            {
+                Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["nTitleNo"] = segments[playerIndex + 1],
+                    ["nApiLevel"] = "10"
+                })
+            };
+            request.Headers.Referrer = uri;
+            using var response = await client.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            if (!json.RootElement.TryGetProperty("data", out var data)) return null;
+            if (TryGetMilliseconds(data, "total_file_duration", out var milliseconds)) return milliseconds / 1000d;
+            if (data.TryGetProperty("files", out var files) && files.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                var totalMilliseconds = files.EnumerateArray().Sum(file => TryGetMilliseconds(file, "duration", out var durationMs) ? durationMs : 0);
+                if (totalMilliseconds > 0) return totalMilliseconds / 1000d;
+            }
+            return null;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+        finally
+        {
+            SoopDurationLoadLimiter.Release();
+        }
+    }
+
+    private static bool TryGetMilliseconds(System.Text.Json.JsonElement element, string propertyName, out double milliseconds)
+    {
+        milliseconds = 0;
+        if (!element.TryGetProperty(propertyName, out var value)) return false;
+        if (value.ValueKind == System.Text.Json.JsonValueKind.Number)
+            return value.TryGetDouble(out milliseconds) && milliseconds > 0;
+        return value.ValueKind == System.Text.Json.JsonValueKind.String &&
+               double.TryParse(value.GetString(), System.Globalization.NumberStyles.Float,
+                   System.Globalization.CultureInfo.InvariantCulture, out milliseconds) && milliseconds > 0;
     }
 
     private async Task<bool> LoadThumbnailAsync(MediaCard card, string? thumbnailUrl)
@@ -1057,15 +1348,27 @@ public partial class MainWindow : Window
                     string.Equals(card.OnlineUrl?.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
                 if (existingCard is not null)
                 {
+                    var duration = existingCard.PlatformLabel == "SOOP"
+                        ? await FetchSoopVodDurationAsync(existingCard.OnlineUrl)
+                        : video.DurationSeconds;
+                    existingCard.SetDuration(duration);
                     _ = RefreshCardThumbnailAsync(existingCard, video.ThumbnailUrl);
+                    if (duration is null && existingCard.HasLocalFilePath)
+                        _ = DetectLocalDurationAsync(existingCard);
                     continue;
                 }
                 var card = new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
-                    "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl);
+                    "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl,
+                    durationSeconds: video.DurationSeconds);
+                if (card.PlatformLabel == "SOOP")
+                    card.SetDuration(await FetchSoopVodDurationAsync(card.OnlineUrl));
                 _allCards.Add(card);
                 _ = RefreshCardThumbnailAsync(card, video.ThumbnailUrl);
                 addedCount++;
             }
+            foreach (var card in _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl && card.HasLocalFilePath &&
+                                                          !foundVideos.Any(video => string.Equals(video.Url.TrimEnd('/'), card.OnlineUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) && video.DurationSeconds is > 0)))
+                _ = DetectLocalDurationAsync(card);
             SaveChannel(channel);
             if (button is not null) ToolTip.SetTip(button, addedCount == 0 ? "새 영상이 없습니다" : $"새 영상 {addedCount}개 추가");
             UpdateCards();
@@ -1080,7 +1383,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private static async Task<List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl)>> FetchChannelVideosAsync(ChannelEntry channel)
+    private static async Task<List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl, double? DurationSeconds)>> FetchChannelVideosAsync(ChannelEntry channel)
     {
         if (!Uri.TryCreate(channel.ChannelUrl, UriKind.Absolute, out var channelUri) ||
             !TryGetPlatformChannelId(channel.Platform == "SOOP" ? "SOOP" : "CHZZK", channelUri, out var channelId))
@@ -1088,7 +1391,7 @@ public partial class MainWindow : Window
 
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
-        var videos = new List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl)>();
+        var videos = new List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl, double? DurationSeconds)>();
         if (channel.Platform == "SOOP")
         {
             const int pageSize = 60;
@@ -1109,7 +1412,8 @@ public partial class MainWindow : Window
                     newVodCount++;
                     var dateValue = item.TryGetProperty("reg_date", out var regDate) ? regDate.ToString() : null;
                     var thumbnailUrl = GetFirstString(item, "thumb", "thumbnail", "thumb_url", "thumbnail_url", "title_img", "title_thumbnail");
-                    videos.Add((title, $"https://vod.sooplive.com/player/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl));
+                    videos.Add((title, $"https://vod.sooplive.com/player/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl,
+                        GetDurationSeconds(item, "total_file_duration", "file_duration", "duration")));
                 }
 
                 if (data.GetArrayLength() < pageSize || newVodCount == 0) break;
@@ -1130,7 +1434,8 @@ public partial class MainWindow : Window
                 if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(title)) continue;
                 var dateValue = item.TryGetProperty("publishDate", out var publishDate) ? publishDate.GetString() : null;
                 var thumbnailUrl = item.TryGetProperty("thumbnailImageUrl", out var thumbnail) ? thumbnail.GetString() : null;
-                videos.Add((title, $"https://chzzk.naver.com/video/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl));
+                videos.Add((title, $"https://chzzk.naver.com/video/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl,
+                    GetDurationSeconds(item, "duration", "videoDuration")));
             }
             if (data.GetArrayLength() < 30) break;
         }
@@ -1142,6 +1447,22 @@ public partial class MainWindow : Window
         foreach (var name in names)
             if (item.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String &&
                 !string.IsNullOrWhiteSpace(value.GetString())) return value.GetString();
+        return null;
+    }
+
+    private static double? GetDurationSeconds(System.Text.Json.JsonElement item, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (!item.TryGetProperty(name, out var value)) continue;
+            if (value.ValueKind == System.Text.Json.JsonValueKind.Number && value.TryGetDouble(out var seconds) && seconds > 0) return seconds;
+            if (value.ValueKind == System.Text.Json.JsonValueKind.String &&
+                double.TryParse(value.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out seconds) && seconds > 0)
+                return seconds;
+            if (value.ValueKind == System.Text.Json.JsonValueKind.String &&
+                TimeSpan.TryParse(value.GetString(), System.Globalization.CultureInfo.InvariantCulture, out var time) && time.TotalSeconds > 0)
+                return time.TotalSeconds;
+        }
         return null;
     }
 
@@ -1944,13 +2265,23 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     private string _memo;
     private string _vodId;
     private double _lastPositionSeconds;
+    private double? _durationSeconds;
+    private bool _isPositionSliderInteracting;
+    private bool _positionSliderHasPendingChanges;
+    private bool _isPlaybackProgressHovered;
+    private bool _isPlaybackProgressDragging;
+    private bool _hasPendingPositionInput;
+    private string _lastPositionHours = "00";
+    private string _lastPositionMinutes = "00";
+    private string _lastPositionRemainderSeconds = "00";
     private DateTimeOffset _updatedAt;
 
     public MediaCard(string title, string platformLabel, string sourceTypeLabel, string sourceLabel,
         string availabilityLabel, string watchStatusLabel, string sourceValue, string? channelUrl = null,
         DateTimeOffset? publishedAt = null, string? thumbnailUrl = null, string? thumbnailPath = null,
         string? onlineUrl = null, string? localFilePath = null, string? vodId = null,
-        double lastPositionSeconds = 0, string? memo = null, DateTimeOffset? updatedAt = null)
+        double lastPositionSeconds = 0, string? memo = null, DateTimeOffset? updatedAt = null,
+        double? durationSeconds = null)
     {
         _title = title;
         PlatformLabel = platformLabel;
@@ -1967,6 +2298,8 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         _localFilePath = NullIfBlank(localFilePath) ?? (sourceTypeLabel == "PC 파일" ? NullIfBlank(sourceValue) : null);
         _vodId = string.IsNullOrWhiteSpace(vodId) ? LibraryTransfer.GetVodId(platformLabel, _onlineUrl ?? "", _localFilePath ?? "", title) : vodId;
         _lastPositionSeconds = Math.Max(0, lastPositionSeconds);
+        SetLastPositionPartsFromSeconds(_lastPositionSeconds);
+        _durationSeconds = durationSeconds > 0 ? durationSeconds : null;
         _memo = memo ?? "";
         _updatedAt = updatedAt ?? DateTimeOffset.UtcNow;
         RefreshSourceLabels();
@@ -1982,6 +2315,26 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public string? LocalFilePath => _localFilePath;
     public string VodId => _vodId;
     public double LastPositionSeconds => _lastPositionSeconds;
+    public double? DurationSeconds => _durationSeconds;
+    public bool HasKnownDuration => _durationSeconds is > 0;
+    public string DurationLabel => _durationSeconds is > 0 ? FormatDuration(_durationSeconds.Value) : "알 수 없음";
+    public double SliderMaximumSeconds => _durationSeconds is > 0 ? _durationSeconds.Value : 1;
+    public double PlaybackPositionSliderValue
+    {
+        get => _lastPositionSeconds;
+        set => SetLastPositionFromSlider(value);
+    }
+    public double PlaybackProgressRatio => _durationSeconds is > 0
+        ? Math.Clamp(_lastPositionSeconds / _durationSeconds.Value, 0, 1)
+        : 0;
+    public double PlaybackProgressBarHeight => _isPlaybackProgressHovered || _isPlaybackProgressDragging ? 8 : 4;
+    public IBrush PlaybackAccentBrush => new SolidColorBrush(Color.Parse(PlatformLabel == "SOOP" ? "#398FE0" : "#35B879"));
+    public bool IsPositionSliderVisible => IsLastPositionVisible && _durationSeconds is > 0;
+    public bool IsPositionSliderInteracting => _isPositionSliderInteracting;
+    public string LastPositionHours { get => _lastPositionHours; set => SetLastPositionPart("hours", value); }
+    public string LastPositionMinutes { get => _lastPositionMinutes; set => SetLastPositionPart("minutes", value); }
+    public string LastPositionRemainderSeconds { get => _lastPositionRemainderSeconds; set => SetLastPositionPart("seconds", value); }
+    public bool IsLastPositionVisible => WatchStatusLabel == "시청중";
     public string Memo => _memo;
     public DateTimeOffset UpdatedAt => _updatedAt;
     public string LocalFilePathLabel => _localFilePath ?? "";
@@ -2014,10 +2367,14 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
 
     public void UpdateDetails(string title, DateTimeOffset? publishedAt, string? onlineUrl, string? localFilePath, string? vodId = null)
     {
+        var sourceChanged = !string.Equals(_onlineUrl, NullIfBlank(onlineUrl), StringComparison.OrdinalIgnoreCase) ||
+                            !string.Equals(_localFilePath, NullIfBlank(localFilePath), StringComparison.OrdinalIgnoreCase);
         _title = title;
         _publishedAt = publishedAt;
         _onlineUrl = NullIfBlank(onlineUrl);
         _localFilePath = NullIfBlank(localFilePath);
+        if (sourceChanged)
+            SetDuration(null);
         _vodId = string.IsNullOrWhiteSpace(vodId) ? LibraryTransfer.GetVodId(PlatformLabel, _onlineUrl ?? "", _localFilePath ?? "", title) : vodId;
         _updatedAt = DateTimeOffset.UtcNow;
         RefreshSourceLabels();
@@ -2055,6 +2412,8 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         _watchStatusIndex = (_watchStatusIndex + 1) % WatchStatuses.Length;
         OnPropertyChanged(nameof(WatchStatusLabel));
         OnPropertyChanged(nameof(WatchStatusBackground));
+        OnPropertyChanged(nameof(IsLastPositionVisible));
+        OnPropertyChanged(nameof(IsPositionSliderVisible));
     }
 
     public void SetThumbnail(Bitmap bitmap)
@@ -2093,6 +2452,107 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         : new SolidColorBrush(Color.Parse("#E5E6ED"));
     public Thickness CardBorderThickness => new(IsSelected ? 2 : 1);
     public string PublishedAtLabel => PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd") ?? "";
+    public void SetDuration(double? seconds)
+    {
+        _durationSeconds = seconds > 0 ? seconds : null;
+        OnPropertyChanged(nameof(DurationSeconds));
+        OnPropertyChanged(nameof(HasKnownDuration));
+        OnPropertyChanged(nameof(DurationLabel));
+        OnPropertyChanged(nameof(SliderMaximumSeconds));
+        OnPropertyChanged(nameof(PlaybackProgressRatio));
+        OnPropertyChanged(nameof(IsPositionSliderVisible));
+    }
+
+    public void SetPlaybackProgressHovered(bool isHovered)
+    {
+        SetPlaybackProgressPointerOver(isHovered);
+    }
+
+    public void SetPlaybackProgressPointerOver(bool isPointerOver)
+    {
+        if (_isPlaybackProgressHovered == isPointerOver) return;
+        _isPlaybackProgressHovered = isPointerOver;
+        OnPropertyChanged(nameof(PlaybackProgressBarHeight));
+    }
+
+    public void SetPlaybackProgressDragging(bool isDragging)
+    {
+        if (_isPlaybackProgressDragging == isDragging) return;
+        _isPlaybackProgressDragging = isDragging;
+        OnPropertyChanged(nameof(PlaybackProgressBarHeight));
+    }
+
+    public void SetLastPositionPart(string part, string value)
+    {
+        if (value.Length > 2 || value.Any(character => !char.IsAsciiDigit(character))) return;
+        switch (part)
+        {
+            case "hours": _lastPositionHours = value; break;
+            case "minutes": _lastPositionMinutes = value; break;
+            case "seconds": _lastPositionRemainderSeconds = value; break;
+            default: return;
+        }
+        if (!int.TryParse(_lastPositionHours, out var hours) || !int.TryParse(_lastPositionMinutes, out var minutes) ||
+            !int.TryParse(_lastPositionRemainderSeconds, out var seconds) || minutes > 59 || seconds > 59) return;
+        _lastPositionSeconds = hours * 3600d + minutes * 60d + seconds;
+        _hasPendingPositionInput = true;
+        _updatedAt = DateTimeOffset.UtcNow;
+        OnPropertyChanged(nameof(LastPositionSeconds));
+        OnPropertyChanged(nameof(PlaybackPositionSliderValue));
+        OnPropertyChanged(nameof(PlaybackProgressRatio));
+    }
+
+    public void BeginPositionSliderInteraction()
+    {
+        _isPositionSliderInteracting = true;
+        _positionSliderHasPendingChanges = false;
+    }
+
+    public bool EndPositionSliderInteraction()
+    {
+        _isPositionSliderInteracting = false;
+        var changed = _positionSliderHasPendingChanges;
+        _positionSliderHasPendingChanges = false;
+        return changed;
+    }
+
+    public bool CommitPositionInput()
+    {
+        var changed = _hasPendingPositionInput;
+        _hasPendingPositionInput = false;
+        return changed;
+    }
+
+    private void SetLastPositionFromSlider(double value)
+    {
+        var maximum = _durationSeconds is > 0 ? _durationSeconds.Value : double.MaxValue;
+        var seconds = Math.Clamp(Math.Round(value), 0, maximum);
+        if (Math.Abs(_lastPositionSeconds - seconds) < 0.5) return;
+        _lastPositionSeconds = seconds;
+        SetLastPositionPartsFromSeconds(seconds);
+        _updatedAt = DateTimeOffset.UtcNow;
+        if (_isPositionSliderInteracting) _positionSliderHasPendingChanges = true;
+        OnPropertyChanged(nameof(LastPositionSeconds));
+        OnPropertyChanged(nameof(PlaybackPositionSliderValue));
+        OnPropertyChanged(nameof(PlaybackProgressRatio));
+        OnPropertyChanged(nameof(LastPositionHours));
+        OnPropertyChanged(nameof(LastPositionMinutes));
+        OnPropertyChanged(nameof(LastPositionRemainderSeconds));
+    }
+
+    private static string FormatDuration(double seconds)
+    {
+        var total = Math.Max(0, (long)Math.Round(seconds));
+        return TimeSpan.FromSeconds(total).ToString(@"hh\:mm\:ss");
+    }
+
+    private void SetLastPositionPartsFromSeconds(double value)
+    {
+        var time = TimeSpan.FromSeconds(Math.Max(0, value));
+        _lastPositionHours = Math.Min(99, (int)time.TotalHours).ToString("00");
+        _lastPositionMinutes = time.Minutes.ToString("00");
+        _lastPositionRemainderSeconds = time.Seconds.ToString("00");
+    }
     private void OnPropertyChanged(string propertyName) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
     public void Dispose() => _thumbnail?.Dispose();
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;

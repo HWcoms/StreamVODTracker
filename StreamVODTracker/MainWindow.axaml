@@ -7,6 +7,9 @@
         x:Class="StreamVODTracker.MainWindow"
         Title="VOD Tracker" Width="1280" Height="820" MinWidth="980" MinHeight="640"
         Background="{DynamicResource AppBackgroundBrush}">
+    <Window.Icon>
+        <WindowIcon>/Assets/app-icon.ico</WindowIcon>
+    </Window.Icon>
     <Window.Resources>
         <SolidColorBrush x:Key="AppBackgroundBrush" Color="#F5F6FA" />
         <SolidColorBrush x:Key="SidebarBackgroundBrush" Color="#171923" />
@@ -282,7 +285,7 @@
                                             <Border Width="{Binding CardWidth}" MinHeight="{Binding CardMinHeight}" Margin="0,16,16,0" Padding="15"
                                                     Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
                                                     Tag="grid" Loaded="MediaCard_Loaded" Unloaded="MediaCard_Unloaded" PointerPressed="MediaCard_PointerPressed">
-                                                <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" RowSpacing="9">
+                                                <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto" RowSpacing="9">
                                                     <Border Height="142" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
                                                             IsVisible="{Binding ShowThumbnails}">
                                                         <Grid>
@@ -299,10 +302,33 @@
                                                                FontSize="11" Foreground="#7156E8" TextTrimming="CharacterEllipsis" TextDecorations="Underline"
                                                                Cursor="Hand" ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed" />
                                                     <Grid Grid.Row="4" ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                                                        <TextBlock Text="{Binding PublishedAtLabel}" FontSize="14" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                                                        <StackPanel Spacing="3" VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                                                <StackPanel Orientation="Horizontal" Spacing="3" IsVisible="{Binding IsLastPositionVisible}">
+                                                                    <TextBlock Text="시청 위치:" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                                    <TextBox Width="20" MinWidth="0" Height="18" MinHeight="0" Padding="0" FontSize="10" BorderBrush="#555963" BorderThickness="1" VerticalContentAlignment="Center" MaxLength="2" Tag="hours" Text="{Binding LastPositionHours}" TextChanged="LastPositionInput_TextChanged" TextInput="LastPositionInput_TextInput" GotFocus="LastPositionInput_GotFocus" LostFocus="LastPositionInput_LostFocus" />
+                                                                    <TextBlock Text=":" VerticalAlignment="Center" />
+                                                                    <TextBox Width="20" MinWidth="0" Height="18" MinHeight="0" Padding="0" FontSize="10" BorderBrush="#555963" BorderThickness="1" VerticalContentAlignment="Center" MaxLength="2" Tag="minutes" Text="{Binding LastPositionMinutes}" TextChanged="LastPositionInput_TextChanged" TextInput="LastPositionInput_TextInput" GotFocus="LastPositionInput_GotFocus" LostFocus="LastPositionInput_LostFocus" />
+                                                                    <TextBlock Text=":" VerticalAlignment="Center" />
+                                                                    <TextBox Width="20" MinWidth="0" Height="18" MinHeight="0" Padding="0" FontSize="10" BorderBrush="#555963" BorderThickness="1" VerticalContentAlignment="Center" MaxLength="2" Tag="seconds" Text="{Binding LastPositionRemainderSeconds}" TextChanged="LastPositionInput_TextChanged" TextInput="LastPositionInput_TextInput" GotFocus="LastPositionInput_GotFocus" LostFocus="LastPositionInput_LostFocus" />
+                                                                </StackPanel>
+                                                                <TextBlock Text="/" IsVisible="{Binding IsLastPositionVisible}" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                                <TextBlock Text="{Binding DurationLabel}" ToolTip.Tip="영상 시간" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                            </StackPanel>
+                                                            <TextBlock Text="{Binding PublishedAtLabel}" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                        </StackPanel>
                                                         <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
                                                                 BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
                                                                 Click="WatchStatus_Click" />
+                                                    </Grid>
+                                                    <Grid Classes="playback-progress" Grid.Row="5" Height="20" Background="Transparent" IsVisible="{Binding IsLastPositionVisible}"
+                                                          Cursor="Hand" Focusable="True"
+                                                          PointerEntered="PlaybackProgress_PointerEntered" PointerExited="PlaybackProgress_PointerExited"
+                                                          PointerPressed="PlaybackPositionSlider_PointerPressed" PointerMoved="PlaybackPositionSlider_PointerMoved" PointerReleased="PlaybackPositionSlider_PointerReleased"
+                                                          KeyDown="PlaybackPositionSlider_KeyDown" KeyUp="PlaybackPositionSlider_KeyUp">
+                                                        <ProgressBar Minimum="0" Maximum="1" Value="{Binding PlaybackProgressRatio}" Height="{Binding PlaybackProgressBarHeight}"
+                                                                     VerticalAlignment="Center" Background="#C9CBD3" Foreground="{Binding PlaybackAccentBrush}"
+                                                                     IsHitTestVisible="False" />
                                                     </Grid>
                                                 </Grid>
                                             </Border>
@@ -323,7 +349,7 @@
                                         <Border HorizontalAlignment="Stretch" MinHeight="122" Margin="0,10,0,0" Padding="14"
                                                 Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
                                                 Tag="list" Loaded="MediaCard_Loaded" Unloaded="MediaCard_Unloaded" PointerPressed="MediaCard_PointerPressed">
-                                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                                            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="16">
                                                 <Border Grid.Column="0" Width="160" Height="94" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
                                                         IsVisible="{Binding ShowThumbnails}">
                                                     <Grid>
@@ -343,11 +369,32 @@
                                                                    Cursor="Hand" ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed" />
                                                     </StackPanel>
                                                     <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                                                        <TextBlock Text="{Binding PublishedAtLabel}" FontSize="14" Foreground="{DynamicResource SecondaryTextBrush}" VerticalAlignment="Center" />
+                                                        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal" Spacing="3" IsVisible="{Binding IsLastPositionVisible}">
+                                                                <TextBlock Text="시청 위치:" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                                <TextBox Width="20" MinWidth="0" Height="18" MinHeight="0" Padding="0" FontSize="10" BorderBrush="#555963" BorderThickness="1" VerticalContentAlignment="Center" MaxLength="2" Tag="hours" Text="{Binding LastPositionHours}" TextChanged="LastPositionInput_TextChanged" TextInput="LastPositionInput_TextInput" GotFocus="LastPositionInput_GotFocus" LostFocus="LastPositionInput_LostFocus" />
+                                                                <TextBlock Text=":" VerticalAlignment="Center" />
+                                                                <TextBox Width="20" MinWidth="0" Height="18" MinHeight="0" Padding="0" FontSize="10" BorderBrush="#555963" BorderThickness="1" VerticalContentAlignment="Center" MaxLength="2" Tag="minutes" Text="{Binding LastPositionMinutes}" TextChanged="LastPositionInput_TextChanged" TextInput="LastPositionInput_TextInput" GotFocus="LastPositionInput_GotFocus" LostFocus="LastPositionInput_LostFocus" />
+                                                                <TextBlock Text=":" VerticalAlignment="Center" />
+                                                                <TextBox Width="20" MinWidth="0" Height="18" MinHeight="0" Padding="0" FontSize="10" BorderBrush="#555963" BorderThickness="1" VerticalContentAlignment="Center" MaxLength="2" Tag="seconds" Text="{Binding LastPositionRemainderSeconds}" TextChanged="LastPositionInput_TextChanged" TextInput="LastPositionInput_TextInput" GotFocus="LastPositionInput_GotFocus" LostFocus="LastPositionInput_LostFocus" />
+                                                            </StackPanel>
+                                                            <TextBlock Text="/" IsVisible="{Binding IsLastPositionVisible}" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                            <TextBlock Text="{Binding DurationLabel}" ToolTip.Tip="영상 시간" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                            <TextBlock Text="{Binding PublishedAtLabel}" FontSize="12" Foreground="{DynamicResource SecondaryTextBrush}" />
+                                                        </StackPanel>
                                                         <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
                                                                 BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
                                                                 Click="WatchStatus_Click" />
                                                     </Grid>
+                                                </Grid>
+                                                <Grid Classes="playback-progress" Grid.Row="1" Grid.ColumnSpan="2" Margin="0,4,0,0" Height="20" Background="Transparent" IsVisible="{Binding IsLastPositionVisible}"
+                                                      Cursor="Hand" Focusable="True"
+                                                      PointerEntered="PlaybackProgress_PointerEntered" PointerExited="PlaybackProgress_PointerExited"
+                                                      PointerPressed="PlaybackPositionSlider_PointerPressed" PointerMoved="PlaybackPositionSlider_PointerMoved" PointerReleased="PlaybackPositionSlider_PointerReleased"
+                                                      KeyDown="PlaybackPositionSlider_KeyDown" KeyUp="PlaybackPositionSlider_KeyUp">
+                                                    <ProgressBar Minimum="0" Maximum="1" Value="{Binding PlaybackProgressRatio}" Height="{Binding PlaybackProgressBarHeight}"
+                                                                 VerticalAlignment="Center" Background="#C9CBD3" Foreground="{Binding PlaybackAccentBrush}"
+                                                                 IsHitTestVisible="False" />
                                                 </Grid>
                                             </Grid>
                                         </Border>

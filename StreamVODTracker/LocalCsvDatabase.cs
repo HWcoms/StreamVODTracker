@@ -42,6 +42,13 @@ internal sealed class LocalCsvDatabase : IVodRepository
         "VodId", "Title", "SourceType", "Url", "LocalFilePath", "PublishedAtUtc", "WatchStatus",
         "LastPositionSeconds", "Memo", "UpdatedAt", "ThumbnailUrl", "ThumbnailPath"
     ];
+    private static readonly string[] PreviousHeaderWithDuration =
+    [
+        "RecordType", "Platform", "ChannelId", "ChannelName", "ChannelDescription", "ChannelUrl",
+        "ChannelProfileImageUrl", "ChannelProfileImagePath",
+        "VodId", "Title", "SourceType", "Url", "LocalFilePath", "PublishedAtUtc", "WatchStatus",
+        "LastPositionSeconds", "Memo", "UpdatedAt", "ThumbnailUrl", "ThumbnailPath", "DurationSeconds"
+    ];
     private static readonly string[] PreviousCurrentHeader =
     [
         "RecordType", "Platform", "ChannelId", "ChannelName", "ChannelDescription", "ChannelUrl",
@@ -106,20 +113,22 @@ internal sealed class LocalCsvDatabase : IVodRepository
                 var rows = ReadCsv(path);
                 if (rows.Count == 0) continue;
                 var hasProfileColumns = rows[0].SequenceEqual(Header, StringComparer.Ordinal);
+                var hasPreviousProfileColumns = rows[0].SequenceEqual(PreviousHeaderWithDuration, StringComparer.Ordinal);
                 var hasPreviousCurrentColumns = rows[0].SequenceEqual(PreviousCurrentHeader, StringComparer.Ordinal);
                 var hasExtendedColumns = rows[0].SequenceEqual(PreviousExtendedHeader, StringComparer.Ordinal);
                 var hasPreviousColumns = rows[0].SequenceEqual(PreviousHeader, StringComparer.Ordinal);
                 var isProfileLegacy = rows[0].SequenceEqual(ProfileLegacyHeader, StringComparer.Ordinal);
                 var isLegacy = rows[0].SequenceEqual(LegacyHeader, StringComparer.Ordinal);
-                if (!hasProfileColumns && !hasPreviousCurrentColumns && !hasExtendedColumns && !hasPreviousColumns && !isProfileLegacy && !isLegacy) continue;
-                var hasChannelIdColumn = hasProfileColumns || hasPreviousCurrentColumns || hasExtendedColumns || hasPreviousColumns;
+                if (!hasProfileColumns && !hasPreviousProfileColumns && !hasPreviousCurrentColumns && !hasExtendedColumns && !hasPreviousColumns && !isProfileLegacy && !isLegacy) continue;
+                var hasChannelIdColumn = hasProfileColumns || hasPreviousProfileColumns || hasPreviousCurrentColumns || hasExtendedColumns || hasPreviousColumns;
                 var hasProfile = hasChannelIdColumn || isProfileLegacy;
                 var mediaStart = hasProfile ? 8 : 6;
                 SavedChannel? channel = null;
                 var media = new List<SavedMedia>();
                 foreach (var row in rows.Skip(1))
                 {
-                    if (row.Count < (hasProfileColumns ? Header.Length : hasPreviousCurrentColumns ? PreviousCurrentHeader.Length : hasExtendedColumns ? PreviousExtendedHeader.Length : hasPreviousColumns ? PreviousHeader.Length : isProfileLegacy ? ProfileLegacyHeader.Length : LegacyHeader.Length)) continue;
+                    var expectedColumns = hasProfileColumns ? Header.Length : hasPreviousProfileColumns ? PreviousHeaderWithDuration.Length : hasPreviousCurrentColumns ? PreviousCurrentHeader.Length : hasExtendedColumns ? PreviousExtendedHeader.Length : hasPreviousColumns ? PreviousHeader.Length : isProfileLegacy ? ProfileLegacyHeader.Length : LegacyHeader.Length;
+                    if (row.Count < expectedColumns && row[0] != "Channel") continue;
                     if (row[0] == "Channel")
                     {
                         var platform = row[1];
@@ -136,7 +145,7 @@ internal sealed class LocalCsvDatabase : IVodRepository
                     else if (row[0] == "Media")
                     {
                         var mediaPlatform = string.IsNullOrWhiteSpace(row[1]) ? channel?.Platform ?? "" : row[1];
-                        if (hasProfileColumns)
+                        if (hasProfileColumns || hasPreviousProfileColumns)
                         {
                             var vodId = row[8];
                             var title = row[9];
