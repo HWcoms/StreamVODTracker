@@ -31,6 +31,7 @@ internal interface IVodRepository
 {
     IReadOnlyList<SavedChannelData> LoadAll();
     void Save(ChannelEntry channel, IEnumerable<MediaCard> cards);
+    void Delete(ChannelEntry channel);
 }
 
 internal sealed class LocalCsvDatabase : IVodRepository
@@ -219,6 +220,27 @@ internal sealed class LocalCsvDatabase : IVodRepository
             if (_loadedCsvPaths.TryGetValue(key, out var oldPath) && !string.Equals(oldPath, path, StringComparison.OrdinalIgnoreCase) && File.Exists(oldPath))
                 File.Delete(oldPath);
             _loadedCsvPaths[key] = path;
+        }
+    }
+
+    public void Delete(ChannelEntry channel)
+    {
+        lock (_saveLock)
+        {
+            var key = GetChannelKey(channel.Platform, channel.ChannelId);
+            var path = _loadedCsvPaths.TryGetValue(key, out var loadedPath) ? loadedPath : GetChannelCsvPath(channel);
+            if (File.Exists(path)) File.Delete(path);
+            var temporaryPath = path + ".tmp";
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            _loadedCsvPaths.Remove(key);
+
+            var thumbnailDirectory = Path.Combine(_thumbnailDirectory, GetStableId(channel.Platform, channel.ChannelId));
+            try
+            {
+                if (Directory.Exists(thumbnailDirectory)) Directory.Delete(thumbnailDirectory, recursive: true);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
         }
     }
 
