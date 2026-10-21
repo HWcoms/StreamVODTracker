@@ -32,4 +32,4 @@ Channel integrations use community APIs and may change if those services are upd
 
 ## License
 
-MIT. See [LICENSE](LICENSE) and [third-party notices](StreamVODTracker/THIRD-PARTY-LICENSES.md).
+MIT. See [LICENSE](LICENSE) and [third-party notices](StreamVODTracker/THIRD-PARTY-LICENSES.md).  
