@@ -31,6 +31,10 @@ public sealed class AppSettingsStore
 
     public void SaveIsDarkTheme(bool isDark) => SaveValue("Appearance", "Theme", isDark ? "Dark" : "Light");
 
+    public string LoadGoogleOAuthClientId() => LoadValue("GoogleDrive", "OAuthClientId") ?? "";
+
+    public void SaveGoogleOAuthClientId(string clientId) => SaveValue("GoogleDrive", "OAuthClientId", clientId.Trim());
+
     public string LoadVideoPlayerPath() => LoadValue("Playback", "PlayerPath") ?? "";
 
     public void SaveVideoPlayerPath(string path) => SaveValue("Playback", "PlayerPath", path);

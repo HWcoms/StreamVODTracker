@@ -8,6 +8,7 @@ using System.Text.Json;
 namespace StreamVODTracker;
 
 public sealed record PlatformApiCredentials(string ClientId, string ClientSecret);
+public sealed record GoogleDriveCredentials(string Email, string RefreshToken);
 
 [SupportedOSPlatform("windows")]
 public static class WindowsCredentialVault
@@ -15,7 +16,65 @@ public static class WindowsCredentialVault
     private const uint GenericCredential = 1;
     private const uint PersistLocalMachine = 2;
     private const string Prefix = "VODTracker/PlatformApi/";
+    private const string GoogleDriveTarget = "VODTracker/GoogleDrive/OAuth";
 
+    public static GoogleDriveCredentials? ReadGoogleDrive()
+    {
+        if (!CredRead(GoogleDriveTarget, GenericCredential, 0, out var pointer))
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (error == 1168) return null;
+            throw new Win32Exception(error, "Google Drive login information could not be read.");
+        }
+        try
+        {
+            var native = Marshal.PtrToStructure<NativeCredential>(pointer);
+            if (native.CredentialBlobSize > 16_384 || native.CredentialBlob == IntPtr.Zero)
+                throw new SecurityException("Stored Google Drive login information is invalid.");
+            var bytes = new byte[checked((int)native.CredentialBlobSize)];
+            Marshal.Copy(native.CredentialBlob, bytes, 0, bytes.Length);
+            try { return JsonSerializer.Deserialize<GoogleDriveCredentials>(Encoding.UTF8.GetString(bytes)); }
+            finally { System.Security.Cryptography.CryptographicOperations.ZeroMemory(bytes); }
+        }
+        finally { CredFree(pointer); }
+    }
+
+    public static void SaveGoogleDrive(GoogleDriveCredentials credentials)
+    {
+        var blob = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(credentials));
+        var blobPointer = Marshal.AllocHGlobal(blob.Length);
+        try
+        {
+            Marshal.Copy(blob, 0, blobPointer, blob.Length);
+            var credential = new NativeCredential
+            {
+                Type = GenericCredential,
+                TargetName = GoogleDriveTarget,
+                Comment = "VODTracker Google Drive refresh token",
+                CredentialBlobSize = (uint)blob.Length,
+                CredentialBlob = blobPointer,
+                Persist = PersistLocalMachine,
+                UserName = credentials.Email
+            };
+            if (!CredWrite(ref credential, 0))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Google Drive login information could not be saved in Windows Credential Manager.");
+        }
+        finally
+        {
+            Marshal.Copy(new byte[blob.Length], 0, blobPointer, blob.Length);
+            Marshal.FreeHGlobal(blobPointer);
+            Array.Clear(blob);
+        }
+    }
+
+    public static void DeleteGoogleDrive()
+    {
+        if (!CredDelete(GoogleDriveTarget, GenericCredential, 0))
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (error != 1168) throw new Win32Exception(error, "Google Drive login information could not be deleted.");
+        }
+    }
     public static bool HasCredentials(string platform)
     {
         var target = Prefix + NormalizePlatform(platform);

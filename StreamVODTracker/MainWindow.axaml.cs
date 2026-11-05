@@ -45,6 +45,10 @@ public partial class MainWindow : Window
     private static readonly SemaphoreSlim SoopDurationLoadLimiter = new(10);
     private readonly LocalCsvDatabase _localDatabase;
     private readonly IVodRepository _vodRepository;
+    private GoogleDriveSyncClient? _driveSyncClient;
+    private bool _isSyncingDrive;
+    private bool _driveUploadPending;
+    private readonly DispatcherTimer _driveUploadTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private static readonly SemaphoreSlim ThumbnailLoadLimiter = new(4);
     private ChannelEntry? _selectedChannel;
     private bool _isListView;
@@ -95,12 +99,15 @@ public partial class MainWindow : Window
             _refreshNotificationTimer.Stop();
             RefreshNotification.IsVisible = false;
         };
+        _driveUploadTimer.Tick += DriveUploadTimer_Tick;
         _channelStatusTimer.Start();
+        _ = RestoreGoogleDriveAndSyncAsync();
         Closed += (_, _) =>
         {
             _channelStatusTimer.Stop();
             _searchDurationRefreshTimer.Stop();
             _refreshNotificationTimer.Stop();
+            _driveUploadTimer.Stop();
             foreach (var channel in _channels) channel.Dispose();
             foreach (var card in _allCards) card.Dispose();
         };
@@ -224,9 +231,124 @@ public partial class MainWindow : Window
     private void SaveChannel(ChannelEntry channel)
     {
         if (_channels.Contains(channel))
+        {
             _vodRepository.Save(channel, _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl));
+            if (!_isSyncingDrive && _driveSyncClient is not null)
+            {
+                _driveUploadPending = true;
+                _driveUploadTimer.Stop();
+                _driveUploadTimer.Start();
+            }
+        }
     }
 
+    private async void DriveUploadTimer_Tick(object? sender, EventArgs e)
+    {
+        _driveUploadTimer.Stop();
+        if (_driveSyncClient is null || !_driveUploadPending) return;
+        _driveUploadPending = false;
+        try { await _driveSyncClient.UploadLibraryAsync(_localDatabase.LoadAll()); }
+        catch (Exception exception)
+        {
+            Debug.WriteLine($"Google Drive background sync failed: {exception.Message}");
+            ShowRefreshNotification($"Google Drive sync failed: {exception.Message}", isError: true);
+        }
+    }
+
+    private async Task RestoreGoogleDriveAndSyncAsync()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            var credentials = WindowsCredentialVault.ReadGoogleDrive();
+            if (credentials is null || string.IsNullOrWhiteSpace(_settingsStore.LoadGoogleOAuthClientId())) return;
+            await SyncGoogleDriveLibraryAsync(credentials);
+        }
+        catch (Exception exception)
+        {
+            Debug.WriteLine($"Google Drive startup sync failed: {exception.Message}");
+            ShowRefreshNotification($"Google Drive sync failed: {exception.Message}", isError: true);
+        }
+    }
+
+    private async Task<int> SyncGoogleDriveLibraryAsync(GoogleDriveCredentials credentials)
+    {
+        var clientId = _settingsStore.LoadGoogleOAuthClientId();
+        if (string.IsNullOrWhiteSpace(clientId)) throw new InvalidOperationException("Enter the Google OAuth desktop client ID in Settings.");
+        _isSyncingDrive = true;
+        _driveUploadPending = false;
+        _driveUploadTimer.Stop();
+        var client = new GoogleDriveSyncClient(clientId, credentials);
+        _driveSyncClient = client;
+        try
+        {
+            var local = _localDatabase.LoadAll();
+            var remote = await client.DownloadLibraryAsync();
+            var localByKey = local.ToDictionary(item => GetSyncChannelKey(item.Channel.Platform, item.Channel.ChannelId), StringComparer.OrdinalIgnoreCase);
+            var remoteByKey = remote.ToDictionary(item => GetSyncChannelKey(item.Channel.Platform, item.Channel.ChannelId), StringComparer.OrdinalIgnoreCase);
+            var merged = new List<SavedChannelData>();
+
+            foreach (var key in localByKey.Keys.Union(remoteByKey.Keys, StringComparer.OrdinalIgnoreCase))
+            {
+                localByKey.TryGetValue(key, out var localChannel);
+                remoteByKey.TryGetValue(key, out var remoteChannel);
+                if (localChannel is null) merged.Add(remoteChannel!);
+                else if (remoteChannel is null) merged.Add(localChannel);
+                else
+                {
+                    var preferredChannel = GetChannelLastUpdate(remoteChannel) > GetChannelLastUpdate(localChannel) ? remoteChannel.Channel : localChannel.Channel;
+                    var records = localChannel.Media.Concat(remoteChannel.Media)
+                        .GroupBy(item => item.VodId, StringComparer.OrdinalIgnoreCase)
+                        .Select(group => group.OrderByDescending(item => item.UpdatedAt ?? item.PublishedAt ?? DateTimeOffset.MinValue).First())
+                        .ToArray();
+                    merged.Add(new SavedChannelData(preferredChannel, records));
+                }
+            }
+
+            foreach (var saved in merged)
+            {
+                localByKey.TryGetValue(GetSyncChannelKey(saved.Channel.Platform, saved.Channel.ChannelId), out var localVersion);
+                var localMedia = localVersion?.Media.ToDictionary(item => item.VodId, StringComparer.OrdinalIgnoreCase)
+                                 ?? new Dictionary<string, SavedMedia>(StringComparer.OrdinalIgnoreCase);
+                var channel = new ChannelEntry(saved.Channel.Platform, saved.Channel.ChannelId, saved.Channel.Name,
+                    saved.Channel.Description, saved.Channel.Url)
+                {
+                    ProfileImageUrl = localVersion?.Channel.ProfileImageUrl,
+                    ProfileImagePath = localVersion?.Channel.ProfileImagePath
+                };
+                var cards = saved.Media.Select(item =>
+                {
+                    localMedia.TryGetValue(item.VodId, out var localItem);
+                    return new MediaCard(item.Title, item.Platform, item.SourceType,
+                    item.SourceLabel, item.Availability, item.WatchStatus, item.SourceValue, saved.Channel.Url,
+                    item.PublishedAt, localItem?.ThumbnailUrl, localItem?.ThumbnailPath, item.OnlineUrl, item.LocalFilePath,
+                    item.VodId, item.LastPositionSeconds, item.Memo, item.UpdatedAt);
+                }).ToArray();
+                _localDatabase.Save(channel, cards);
+                foreach (var card in cards) card.Dispose();
+            }
+
+            await client.UploadLibraryAsync(merged);
+            foreach (var channel in _channels) channel.Dispose();
+            foreach (var card in _allCards) card.Dispose();
+            _channels.Clear();
+            _allCards.Clear();
+            _visibleChannels.Clear();
+            _visibleCards.Clear();
+            _selectedChannel = null;
+            LoadLocalDatabase();
+            UpdateCards();
+            UpdateVisibleChannels();
+            return merged.Count;
+        }
+        finally { _isSyncingDrive = false; }
+    }
+
+    private static string GetSyncChannelKey(string platform, string channelId) => $"{platform}:{channelId}";
+
+    private static DateTimeOffset GetChannelLastUpdate(SavedChannelData channel) =>
+        channel.Media.Select(item => item.UpdatedAt ?? item.PublishedAt ?? DateTimeOffset.MinValue)
+            .DefaultIfEmpty(DateTimeOffset.MinValue).Max();
     private async Task LoadChannelAppearanceAsync(ChannelEntry channel, string platformKey, string channelId,
         string? imageUrl, bool profileLookupSucceeded)
     {
@@ -694,6 +816,13 @@ public partial class MainWindow : Window
             _soopNextPageByChannel.Remove(channel.ChannelUrl);
             _soopHasMoreByChannel.Remove(channel.ChannelUrl);
             channel.Dispose();
+        }
+
+        if (_driveSyncClient is not null)
+        {
+            _driveUploadPending = true;
+            _driveUploadTimer.Stop();
+            _driveUploadTimer.Start();
         }
 
         ClearChannelSelection();
@@ -2698,7 +2827,7 @@ public partial class MainWindow : Window
     private async void OpenSettings_Click(object? sender, RoutedEventArgs e)
     {
         if (!OperatingSystem.IsWindows()) return;
-        var settings = new SettingsWindow(_isDarkTheme, ApplyTheme, _settingsStore);
+        var settings = new SettingsWindow(_isDarkTheme, ApplyTheme, _settingsStore, SyncGoogleDriveLibraryAsync);
         await settings.ShowDialog(this);
     }
 
@@ -3210,7 +3339,9 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public void CycleWatchStatus()
     {
         _watchStatusIndex = (_watchStatusIndex + 1) % WatchStatuses.Length;
+        _updatedAt = DateTimeOffset.UtcNow;
         OnPropertyChanged(nameof(WatchStatusLabel));
+        OnPropertyChanged(nameof(UpdatedAt));
         OnPropertyChanged(nameof(WatchStatusBackground));
         OnPropertyChanged(nameof(IsLastPositionVisible));
         OnPropertyChanged(nameof(PlaybackProgressOpacity));
