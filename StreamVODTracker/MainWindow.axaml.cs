@@ -451,6 +451,8 @@ public partial class MainWindow : Window
     private async Task AddLinkAsync(string platform)
     {
         var titleInput = new TextBox { PlaceholderText = "영상 제목", MinHeight = 38 };
+        var memoInput = new TextBox { PlaceholderText = "메모", Height = 90, MinHeight = 90, AcceptsReturn = true, TextWrapping = Avalonia.Media.TextWrapping.Wrap, VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Top };
+        ScrollViewer.SetVerticalScrollBarVisibility(memoInput, ScrollBarVisibility.Visible);
         var urlInput = new TextBox { PlaceholderText = "https://...", MinHeight = 38 };
         var validation = new TextBlock { Foreground = Avalonia.Media.Brushes.IndianRed, FontSize = 12, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
         var cancelButton = new Button { Content = "취소", MinWidth = 80, IsCancel = true };
@@ -458,11 +460,11 @@ public partial class MainWindow : Window
         {
             Title = $"{platform} 링크 추가",
             Width = 460,
-            Height = 300,
+            Height = 390,
             MinWidth = 460,
-            MinHeight = 300,
+            MinHeight = 390,
             MaxWidth = 460,
-            MaxHeight = 300,
+            MaxHeight = 390,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
             Content = new StackPanel
@@ -476,6 +478,7 @@ public partial class MainWindow : Window
                     titleInput,
                     urlInput,
                     validation,
+                    memoInput,
                     new StackPanel
                     {
                         Orientation = Avalonia.Layout.Orientation.Horizontal,
@@ -510,7 +513,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            _allCards.Add(new MediaCard(title, platform, "링크", uri.Host, "링크 사용 가능", "안 봄", uri.AbsoluteUri));
+            _allCards.Add(new MediaCard(title, platform, "링크", uri.Host, "링크 사용 가능", "안 봄", uri.AbsoluteUri, memo: memoInput.Text));
             UpdateCards();
             dialog.Close();
         };
@@ -1133,6 +1136,8 @@ public partial class MainWindow : Window
         if (card is null) return;
 
         var titleInput = new TextBox { Text = card.Title, PlaceholderText = "영상 제목", MinHeight = 38 };
+        var memoInput = new TextBox { Text = card.Memo, PlaceholderText = "메모", Height = 90, MinHeight = 90, AcceptsReturn = true, TextWrapping = Avalonia.Media.TextWrapping.Wrap, VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Top };
+        ScrollViewer.SetVerticalScrollBarVisibility(memoInput, ScrollBarVisibility.Visible);
         var urlInput = new TextBox { Text = card.OnlineUrl ?? "", PlaceholderText = "온라인 영상 URL (선택)", MinHeight = 38 };
         var filePathInput = new TextBox { Text = card.LocalFilePath ?? "", PlaceholderText = "파일 링크/경로 (선택)", MinHeight = 38 };
         var dateInput = new TextBox
@@ -1147,11 +1152,11 @@ public partial class MainWindow : Window
         {
             Title = "영상 수정",
             Width = 500,
-            Height = 440,
+            Height = 540,
             MinWidth = 500,
-            MinHeight = 440,
+            MinHeight = 540,
             MaxWidth = 500,
-            MaxHeight = 440,
+            MaxHeight = 540,
             CanResize = false,
             WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
@@ -1192,6 +1197,7 @@ public partial class MainWindow : Window
             }
 
             card.UpdateDetails(title, publishedAt, address, filePath);
+            card.SetMemo(memoInput.Text ?? "");
             _ = RefreshCardDurationAsync(card);
             if (card.ChannelUrl is not null && _channels.FirstOrDefault(item => item.ChannelUrl == card.ChannelUrl) is { } channel)
                 SaveChannel(channel);
@@ -1215,6 +1221,7 @@ public partial class MainWindow : Window
                     Children = { filePathInput, chooseFile }
                 },
                 dateRow,
+                memoInput,
                 calendarPopup,
                 error,
                 new StackPanel
@@ -1271,6 +1278,51 @@ public partial class MainWindow : Window
             if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
                 SaveChannel(channel);
             UpdateCards();
+        }
+    }
+
+    private async void Memo_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: MediaCard card }) return;
+        var editor = new TextBox
+        {
+            Text = card.Memo,
+            AcceptsReturn = true,
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            Height = 130,
+            MinHeight = 130,
+            MaxLength = 10000,
+            VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Top
+        };
+        ScrollViewer.SetVerticalScrollBarVisibility(editor, ScrollBarVisibility.Visible);
+        var save = new Button { Content = "저장", Classes = { "primary" }, MinWidth = 80 };
+        var cancel = new Button { Content = "취소", MinWidth = 80 };
+        var dialog = new Window
+        {
+            Title = "메모",
+            Width = 420,
+            Height = 280,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(18),
+                Spacing = 12,
+                Children =
+                {
+                    new TextBlock { Text = card.Title, FontWeight = Avalonia.Media.FontWeight.SemiBold, TextWrapping = Avalonia.Media.TextWrapping.Wrap },
+                    editor,
+                    new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Spacing = 8, Children = { cancel, save } }
+                }
+            }
+        };
+        save.Click += (_, _) => dialog.Close(true);
+        cancel.Click += (_, _) => dialog.Close(false);
+        if (await dialog.ShowDialog<bool>(this))
+        {
+            card.SetMemo(editor.Text ?? "");
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+                SaveChannel(channel);
         }
     }
 
@@ -1388,6 +1440,7 @@ public partial class MainWindow : Window
     private async void MediaSource_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
         if (sender is not Control { DataContext: MediaCard card }) return;
+        if (e.Source is Button || !card.HasOnlineUrl) return;
         e.Handled = true;
         foreach (var item in _allCards) item.IsSelected = ReferenceEquals(item, card);
         if (IsHttpUrl(card.OnlineUrl) && Uri.TryCreate(card.OnlineUrl, UriKind.Absolute, out var uri))
@@ -1399,14 +1452,85 @@ public partial class MainWindow : Window
             return;
         }
 
-        OpenLocalFile(card);
     }
 
     private void MediaFile_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
         if (sender is not Control { DataContext: MediaCard card }) return;
+        if (e.Source is Button || !card.HasLocalFilePath) return;
         e.Handled = true;
         OpenLocalFile(card);
+    }
+
+    private async void AddCardLocalFile_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: MediaCard card }) return;
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "영상 파일 선택",
+            AllowMultiple = false,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("영상 파일") { Patterns = ["*.mp4", "*.mkv", "*.avi", "*.mov", "*.wmv", "*.webm", "*.m4v"] },
+                FilePickerFileTypes.All
+            ]
+        });
+        if (files.Count == 0) return;
+
+        card.UpdateDetails(card.Title, card.PublishedAt, card.OnlineUrl, files[0].Path.LocalPath);
+        _ = DetectLocalDurationAsync(card);
+        if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+            SaveChannel(channel);
+    }
+
+    private async void AddCardOnlineUrl_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: MediaCard card }) return;
+        var urlInput = new TextBox { PlaceholderText = "https://...", MinHeight = 38 };
+        var error = new TextBlock { Foreground = Brushes.IndianRed, FontSize = 12, TextWrapping = TextWrapping.Wrap };
+        var dialog = new Window
+        {
+            Title = "온라인 영상 주소 추가",
+            Width = 440,
+            Height = 210,
+            MinWidth = 440,
+            MinHeight = 210,
+            MaxWidth = 440,
+            MaxHeight = 210,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        var cancel = new Button { Content = "취소", MinWidth = 82, IsCancel = true };
+        var save = new Button { Content = "저장", MinWidth = 82, Classes = { "primary" }, IsDefault = true };
+        cancel.Click += (_, _) => dialog.Close(false);
+        save.Click += (_, _) =>
+        {
+            var address = urlInput.Text?.Trim();
+            if (!IsHttpUrl(address ?? ""))
+            {
+                error.Text = "HTTP 또는 HTTPS 주소를 입력해 주세요.";
+                return;
+            }
+            dialog.Close(true);
+        };
+        dialog.Content = new StackPanel
+        {
+            Margin = new Thickness(20),
+            Spacing = 10,
+            Children =
+            {
+                new TextBlock { Text = "온라인 영상 주소", FontSize = 18, FontWeight = FontWeight.SemiBold },
+                urlInput,
+                error,
+                new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Spacing = 8, Children = { cancel, save } }
+            }
+        };
+        if (await dialog.ShowDialog<bool>(this))
+        {
+            card.UpdateDetails(card.Title, card.PublishedAt, urlInput.Text?.Trim(), card.LocalFilePath);
+            if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+                SaveChannel(channel);
+        }
     }
 
     private static Uri AddVodStartPosition(Uri uri, string platform, double positionSeconds)
@@ -2029,6 +2153,8 @@ public partial class MainWindow : Window
     private async Task AddChannelVideoAsync(ChannelEntry channel)
     {
         var titleInput = new TextBox { PlaceholderText = "영상 제목", MinHeight = 38 };
+        var memoInput = new TextBox { PlaceholderText = "메모", Height = 90, MinHeight = 90, AcceptsReturn = true, TextWrapping = Avalonia.Media.TextWrapping.Wrap, VerticalContentAlignment = Avalonia.Layout.VerticalAlignment.Top };
+        ScrollViewer.SetVerticalScrollBarVisibility(memoInput, ScrollBarVisibility.Visible);
         var urlInput = new TextBox { PlaceholderText = "영상 링크 (선택)", MinHeight = 38 };
         var filePathInput = new TextBox { PlaceholderText = "파일 링크/경로 (선택)", MinHeight = 38 };
         var dateInput = new TextBox { PlaceholderText = "방송 날짜 (선택, 예: 2026-10-13)", MinHeight = 38 };
@@ -2118,8 +2244,8 @@ public partial class MainWindow : Window
         var error = new TextBlock { Foreground = Brushes.IndianRed, FontSize = 12, TextWrapping = Avalonia.Media.TextWrapping.Wrap };
         var dialog = new Window
         {
-            Title = "채널 영상 직접 추가", Width = 500, Height = 440, MinWidth = 500, MinHeight = 440,
-            MaxWidth = 500, MaxHeight = 440, CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner
+            Title = "채널 영상 직접 추가", Width = 500, Height = 540, MinWidth = 500, MinHeight = 540,
+            MaxWidth = 500, MaxHeight = 540, CanResize = false, WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
         var cancel = new Button { Content = "취소", MinWidth = 82, IsCancel = true };
         var save = new Button { Content = "추가", MinWidth = 82, Classes = { "primary" }, IsDefault = true };
@@ -2165,7 +2291,7 @@ public partial class MainWindow : Window
             var sourceType = hasUrl && hasFile ? "링크+파일" : hasUrl ? "링크" : "PC 파일";
             _allCards.Add(new MediaCard(title!, channel.Platform, sourceType, sourceLabel,
                 hasFile ? File.Exists(filePath) ? "파일 확인됨" : "파일 확인 필요" : "링크 사용 가능",
-                "안 봄", primarySource, channel.ChannelUrl, publishedAt, onlineUrl: address, localFilePath: filePath));
+                "안 봄", primarySource, channel.ChannelUrl, publishedAt, onlineUrl: address, localFilePath: filePath, memo: memoInput.Text));
             SaveChannel(channel);
             UpdateCards();
             dialog.Close();
@@ -2184,6 +2310,7 @@ public partial class MainWindow : Window
                     Children = { filePathInput, chooseFile }
                 },
                 dateRow,
+                memoInput,
                 calendarPopup, error,
                 new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right, Spacing = 8, Children = { cancel, save } }
             }
@@ -2961,6 +3088,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public string SourceValue => _onlineUrl ?? _localFilePath ?? "";
     public string? OnlineUrl => _onlineUrl;
     public bool HasOnlineUrl => !string.IsNullOrWhiteSpace(_onlineUrl);
+    public bool NeedsOnlineUrl => !HasOnlineUrl;
     public string? LocalFilePath => _localFilePath;
     public string VodId => _vodId;
     public double LastPositionSeconds => _lastPositionSeconds;
@@ -2977,6 +3105,10 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         ? Math.Clamp(_lastPositionSeconds / _durationSeconds.Value, 0, 1)
         : 0;
     public double PlaybackProgressBarHeight => _isPlaybackProgressHovered || _isPlaybackProgressDragging ? 8 : 4;
+    public double PlaybackProgressOpacity => IsLastPositionVisible ? 1 : 0;
+    public double PlaybackProgressRowHeight => 20;
+    public double OnlineSourceRowHeight => 18;
+    public double LocalSourceRowHeight => 18;
     public IBrush PlaybackAccentBrush => new SolidColorBrush(Color.Parse(PlatformLabel == "SOOP" ? "#398FE0" : "#35B879"));
     public bool IsPositionSliderVisible => IsLastPositionVisible && _durationSeconds is > 0;
     public bool IsPositionSliderInteracting => _isPositionSliderInteracting;
@@ -2985,9 +3117,23 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public string LastPositionRemainderSeconds { get => _lastPositionRemainderSeconds; set => SetLastPositionPart("seconds", value); }
     public bool IsLastPositionVisible => WatchStatusLabel == "시청중";
     public string Memo => _memo;
+    public string MemoOverlayText => string.IsNullOrWhiteSpace(_memo) ? "메모하기" : _memo;
+    public IBrush MemoIconForeground => new SolidColorBrush(Color.Parse(string.IsNullOrWhiteSpace(_memo) ? "#85899B" : "#7156E8"));
+    public void SetMemo(string memo)
+    {
+        var normalized = memo.Trim();
+        if (string.Equals(_memo, normalized, StringComparison.Ordinal)) return;
+        _memo = normalized;
+        _updatedAt = DateTimeOffset.UtcNow;
+        OnPropertyChanged(nameof(Memo));
+        OnPropertyChanged(nameof(MemoOverlayText));
+        OnPropertyChanged(nameof(MemoIconForeground));
+        OnPropertyChanged(nameof(UpdatedAt));
+    }
     public DateTimeOffset UpdatedAt => _updatedAt;
     public string LocalFilePathLabel => _localFilePath ?? "";
     public bool HasLocalFilePath => !string.IsNullOrWhiteSpace(_localFilePath);
+    public bool NeedsLocalFilePath => !HasLocalFilePath;
     public string? ChannelUrl { get; }
     public DateTimeOffset? PublishedAt => _publishedAt;
     public string? ThumbnailUrl { get; private set; }
@@ -3032,9 +3178,13 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         OnPropertyChanged(nameof(PublishedAtLabel));
         OnPropertyChanged(nameof(OnlineUrl));
         OnPropertyChanged(nameof(HasOnlineUrl));
+        OnPropertyChanged(nameof(NeedsOnlineUrl));
+        OnPropertyChanged(nameof(OnlineSourceRowHeight));
         OnPropertyChanged(nameof(LocalFilePath));
         OnPropertyChanged(nameof(LocalFilePathLabel));
         OnPropertyChanged(nameof(HasLocalFilePath));
+        OnPropertyChanged(nameof(NeedsLocalFilePath));
+        OnPropertyChanged(nameof(LocalSourceRowHeight));
         OnPropertyChanged(nameof(SourceValue));
         OnPropertyChanged(nameof(SourceTypeLabel));
         OnPropertyChanged(nameof(SourceLabel));
@@ -3063,6 +3213,8 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         OnPropertyChanged(nameof(WatchStatusLabel));
         OnPropertyChanged(nameof(WatchStatusBackground));
         OnPropertyChanged(nameof(IsLastPositionVisible));
+        OnPropertyChanged(nameof(PlaybackProgressOpacity));
+        OnPropertyChanged(nameof(PlaybackProgressRowHeight));
         OnPropertyChanged(nameof(IsPositionSliderVisible));
     }
 

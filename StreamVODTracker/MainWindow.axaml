@@ -183,15 +183,13 @@
                                                             <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
                                                                 <Grid ColumnDefinitions="*,Auto">
                                                                     <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
-                                                                               TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding DisplayName}"
-                                                                               ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1" />
+                                                                               TextTrimming="CharacterEllipsis" ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1"><ToolTip.Tip><TextBlock Text="{Binding DisplayName}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
                                                                     <Border Grid.Column="1" Background="{Binding PlatformBadgeBackground}" CornerRadius="5" Padding="6,2" VerticalAlignment="Center">
                                                                         <TextBlock Text="{Binding Platform}" FontSize="9" FontWeight="SemiBold" Foreground="White" />
                                                                     </Border>
                                                                 </Grid>
                                                                 <TextBlock Text="{Binding Description}" FontSize="10" Foreground="{DynamicResource SecondaryTextBrush}"
-                                                                           TextWrapping="Wrap" MaxLines="3" ToolTip.Tip="{Binding Description}"
-                                                                           ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1" />
+                                                                           TextWrapping="Wrap" MaxLines="3" ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1"><ToolTip.Tip><TextBlock Text="{Binding Description}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
                                                             </StackPanel>
                                                         </Grid>
                                                     </Border>
@@ -306,7 +304,7 @@
                                             <Border Width="{Binding CardWidth}" MinHeight="{Binding CardMinHeight}" Margin="0,16,16,0" Padding="15"
                                                     Background="{DynamicResource CardSurfaceBrush}" BorderBrush="{Binding CardBorderBrush}" BorderThickness="{Binding CardBorderThickness}" CornerRadius="13"
                                                     Tag="grid" Loaded="MediaCard_Loaded" Unloaded="MediaCard_Unloaded" PointerPressed="MediaCard_PointerPressed">
-                                                <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="9">
+                                                <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="5">
                                                     <Border Height="142" CornerRadius="8" ClipToBounds="True" Background="{DynamicResource InsetSurfaceBrush}"
                                                             IsVisible="{Binding ShowThumbnails}">
                                                         <Grid>
@@ -316,11 +314,11 @@
                                                         </Grid>
                                                     </Border>
                                                     <TextBlock Grid.Row="1" Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
-                                                               TextTrimming="CharacterEllipsis" MaxLines="2" ToolTip.Tip="{Binding Title}"
-                                                               ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1" />
-                                                    <Grid Grid.Row="2" MinHeight="18" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand"
+                                                               Height="36" VerticalAlignment="Top" TextTrimming="CharacterEllipsis" MaxLines="2"
+                                                               ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1"><ToolTip.Tip><TextBlock Text="{Binding Title}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                    <Grid Grid.Row="2" Height="{Binding OnlineSourceRowHeight}" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand"
                                                           VerticalAlignment="Top" PointerPressed="MediaSource_PointerPressed">
-                                                        <Canvas Width="18" Height="18" VerticalAlignment="Center" IsVisible="{Binding HasOnlineUrl}">
+                                                        <Canvas Width="18" Height="18" VerticalAlignment="Center">
                                                             <Ellipse Canvas.Left="1.5" Canvas.Top="2" Width="13" Height="13" Stroke="{DynamicResource SecondaryTextBrush}" StrokeThickness="1.2" />
                                                             <Ellipse Canvas.Left="5.5" Canvas.Top="2" Width="5" Height="13" Stroke="{DynamicResource SecondaryTextBrush}" StrokeThickness="1.1" />
                                                             <Border Canvas.Left="2" Canvas.Top="8" Width="12" Height="1" Background="{DynamicResource SecondaryTextBrush}" />
@@ -332,10 +330,11 @@
                                                             </Border>
                                                         </Canvas>
                                                         <TextBlock Grid.Column="1" Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
-                                                                   TextDecorations="Underline" VerticalAlignment="Top" ToolTip.Tip="{Binding SourceLabel}" IsVisible="{Binding HasOnlineUrl}" />
+                                                                   TextDecorations="Underline" VerticalAlignment="Top" IsVisible="{Binding HasOnlineUrl}"><ToolTip.Tip><TextBlock Text="{Binding SourceLabel}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                        <Button Grid.Column="1" Content="+" Width="24" Height="18" MinHeight="0" Padding="0" FontSize="16" FontWeight="SemiBold" Foreground="#85899B" Background="Transparent" BorderThickness="0" HorizontalAlignment="Left" VerticalAlignment="Center" IsVisible="{Binding NeedsOnlineUrl}" Click="AddCardOnlineUrl_Click" ToolTip.Tip="온라인 영상 주소 추가" />
                                                     </Grid>
-                                                    <Grid Grid.Row="3" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand"
-                                                          IsVisible="{Binding HasLocalFilePath}" ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed">
+                                                    <Grid Grid.Row="3" Height="{Binding LocalSourceRowHeight}" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand"
+                                                           ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed">
                                                         <Canvas Width="18" Height="18" VerticalAlignment="Center">
                                                             <Border Canvas.Left="2.5" Canvas.Top="1" Width="11" Height="15" BorderBrush="#7156E8" BorderThickness="1.1" CornerRadius="1" />
                                                             <Polyline Points="10,1 10,5 14,5" Stroke="#7156E8" StrokeThickness="1.1" />
@@ -349,7 +348,8 @@
                                                             </Border>
                                                         </Canvas>
                                                         <TextBlock Grid.Column="1" Text="{Binding LocalFilePathLabel}" FontSize="11" Foreground="#7156E8" TextTrimming="CharacterEllipsis"
-                                                                   TextDecorations="Underline" VerticalAlignment="Center" ToolTip.Tip="{Binding LocalFilePathLabel}" />
+                                                                   TextDecorations="Underline" VerticalAlignment="Center" IsVisible="{Binding HasLocalFilePath}"><ToolTip.Tip><TextBlock Text="{Binding LocalFilePathLabel}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                        <Button Grid.Column="1" Content="+" Width="24" Height="18" MinHeight="0" Padding="0" FontSize="16" FontWeight="SemiBold" Foreground="#7156E8" Background="Transparent" BorderThickness="0" HorizontalAlignment="Left" VerticalAlignment="Center" IsVisible="{Binding NeedsLocalFilePath}" Click="AddCardLocalFile_Click" ToolTip.Tip="로컬 파일 경로 추가" />
                                                     </Grid>
                                                     <StackPanel Grid.Row="4" Spacing="3">
                                                         <StackPanel Orientation="Horizontal" Spacing="4">
@@ -364,7 +364,7 @@
                                                                 <TextBlock Text="/" IsVisible="{Binding IsLastPositionVisible}" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
                                                                 <TextBlock Text="{Binding DurationLabel}" ToolTip.Tip="영상 시간" FontSize="11" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
                                                         </StackPanel>
-                                                        <Grid Classes="playback-progress" Height="20" Background="Transparent" IsVisible="{Binding IsLastPositionVisible}"
+                                                        <Grid Classes="playback-progress" Height="{Binding PlaybackProgressRowHeight}" Background="Transparent" Opacity="{Binding PlaybackProgressOpacity}" IsHitTestVisible="{Binding IsLastPositionVisible}"
                                                           Cursor="Hand" Focusable="True"
                                                           PointerEntered="PlaybackProgress_PointerEntered" PointerExited="PlaybackProgress_PointerExited"
                                                           PointerPressed="PlaybackPositionSlider_PointerPressed" PointerMoved="PlaybackPositionSlider_PointerMoved" PointerReleased="PlaybackPositionSlider_PointerReleased"
@@ -374,10 +374,11 @@
                                                                          IsHitTestVisible="False" />
                                                         </Grid>
                                                     </StackPanel>
-                                                    <Grid Grid.Row="5" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                    <Grid Grid.Row="5" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
                                                         <TextBlock Text="{Binding PublishedAtLabel}" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}"
                                                                    VerticalAlignment="Center" ToolTip.Tip="방송 날짜" />
-                                                        <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
+                                                        <Button Grid.Column="1" Content="📝" Foreground="{Binding MemoIconForeground}" Background="Transparent" BorderThickness="0" Padding="6" FontSize="16" Click="Memo_Click" ><ToolTip.Tip><TextBlock Text="{Binding MemoOverlayText}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></Button>
+                                                        <Button Grid.Column="2" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
                                                                 BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
                                                                 Click="WatchStatus_Click" />
                                                     </Grid>
@@ -409,13 +410,13 @@
                                                         <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" IsVisible="{Binding HasThumbnail}" />
                                                     </Grid>
                                                 </Border>
-                                                <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto" RowSpacing="7">
+                                                <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto" RowSpacing="4">
                                                     <StackPanel Spacing="6" VerticalAlignment="Center">
                                                         <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
-                                                                   TextTrimming="CharacterEllipsis" MaxLines="1" ToolTip.Tip="{Binding Title}"
-                                                                   ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1" />
-                                                        <Grid MinHeight="18" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand" PointerPressed="MediaSource_PointerPressed">
-                                                            <Canvas Width="18" Height="18" VerticalAlignment="Center" IsVisible="{Binding HasOnlineUrl}">
+                                                                   Height="22" VerticalAlignment="Top" TextTrimming="CharacterEllipsis" MaxLines="1"
+                                                                   ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1"><ToolTip.Tip><TextBlock Text="{Binding Title}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                        <Grid Height="{Binding OnlineSourceRowHeight}" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand" PointerPressed="MediaSource_PointerPressed">
+                                                            <Canvas Width="18" Height="18" VerticalAlignment="Center">
                                                                 <Ellipse Canvas.Left="1.5" Canvas.Top="2" Width="13" Height="13" Stroke="{DynamicResource SecondaryTextBrush}" StrokeThickness="1.2" />
                                                                 <Ellipse Canvas.Left="5.5" Canvas.Top="2" Width="5" Height="13" Stroke="{DynamicResource SecondaryTextBrush}" StrokeThickness="1.1" />
                                                                 <Border Canvas.Left="2" Canvas.Top="8" Width="12" Height="1" Background="{DynamicResource SecondaryTextBrush}" />
@@ -427,9 +428,10 @@
                                                                 </Border>
                                                             </Canvas>
                                                             <TextBlock Grid.Column="1" Text="{Binding SourceLabel}" FontSize="11" Foreground="#85899B" TextTrimming="CharacterEllipsis"
-                                                                       TextDecorations="Underline" VerticalAlignment="Center" ToolTip.Tip="{Binding SourceLabel}" IsVisible="{Binding HasOnlineUrl}" />
+                                                                       TextDecorations="Underline" VerticalAlignment="Center" IsVisible="{Binding HasOnlineUrl}"><ToolTip.Tip><TextBlock Text="{Binding SourceLabel}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                            <Button Grid.Column="1" Content="+" Width="24" Height="18" MinHeight="0" Padding="0" FontSize="16" FontWeight="SemiBold" Foreground="#85899B" Background="Transparent" BorderThickness="0" HorizontalAlignment="Left" VerticalAlignment="Center" IsVisible="{Binding NeedsOnlineUrl}" Click="AddCardOnlineUrl_Click" ToolTip.Tip="온라인 영상 주소 추가" />
                                                         </Grid>
-                                                        <Grid ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand" IsVisible="{Binding HasLocalFilePath}"
+                                                        <Grid Height="{Binding LocalSourceRowHeight}" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand"
                                                               ToolTip.Tip="로컬 파일 열기" PointerPressed="MediaFile_PointerPressed">
                                                             <Canvas Width="18" Height="18" VerticalAlignment="Center">
                                                                 <Border Canvas.Left="2.5" Canvas.Top="1" Width="11" Height="15" BorderBrush="#7156E8" BorderThickness="1.1" CornerRadius="1" />
@@ -444,7 +446,8 @@
                                                                 </Border>
                                                             </Canvas>
                                                             <TextBlock Grid.Column="1" Text="{Binding LocalFilePathLabel}" FontSize="11" Foreground="#7156E8" TextTrimming="CharacterEllipsis"
-                                                                       TextDecorations="Underline" VerticalAlignment="Center" ToolTip.Tip="{Binding LocalFilePathLabel}" />
+                                                                       TextDecorations="Underline" VerticalAlignment="Center" IsVisible="{Binding HasLocalFilePath}"><ToolTip.Tip><TextBlock Text="{Binding LocalFilePathLabel}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                            <Button Grid.Column="1" Content="+" Width="24" Height="18" MinHeight="0" Padding="0" FontSize="16" FontWeight="SemiBold" Foreground="#7156E8" Background="Transparent" BorderThickness="0" HorizontalAlignment="Left" VerticalAlignment="Center" IsVisible="{Binding NeedsLocalFilePath}" Click="AddCardLocalFile_Click" ToolTip.Tip="로컬 파일 경로 추가" />
                                                         </Grid>
                                                     </StackPanel>
                                                     <StackPanel Grid.Row="1" Spacing="3">
@@ -460,7 +463,7 @@
                                                             <TextBlock Text="/" IsVisible="{Binding IsLastPositionVisible}" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
                                                             <TextBlock Text="{Binding DurationLabel}" ToolTip.Tip="영상 시간" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource SecondaryTextBrush}" />
                                                         </StackPanel>
-                                                        <Grid Classes="playback-progress" Height="20" Background="Transparent" IsVisible="{Binding IsLastPositionVisible}"
+                                                        <Grid Classes="playback-progress" Height="{Binding PlaybackProgressRowHeight}" Background="Transparent" Opacity="{Binding PlaybackProgressOpacity}" IsHitTestVisible="{Binding IsLastPositionVisible}"
                                                       Cursor="Hand" Focusable="True"
                                                       PointerEntered="PlaybackProgress_PointerEntered" PointerExited="PlaybackProgress_PointerExited"
                                                       PointerPressed="PlaybackPositionSlider_PointerPressed" PointerMoved="PlaybackPositionSlider_PointerMoved" PointerReleased="PlaybackPositionSlider_PointerReleased"
@@ -470,10 +473,11 @@
                                                                          IsHitTestVisible="False" />
                                                         </Grid>
                                                     </StackPanel>
-                                                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                    <Grid Grid.Row="2" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
                                                         <TextBlock Text="{Binding PublishedAtLabel}" FontSize="12" Foreground="{DynamicResource SecondaryTextBrush}"
                                                                    VerticalAlignment="Center" ToolTip.Tip="방송 날짜" />
-                                                        <Button Grid.Column="1" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
+                                                        <Button Grid.Column="1" Content="📝" Foreground="{Binding MemoIconForeground}" Background="Transparent" BorderThickness="0" Padding="6" FontSize="16" Click="Memo_Click" ><ToolTip.Tip><TextBlock Text="{Binding MemoOverlayText}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></Button>
+                                                        <Button Grid.Column="2" Content="{Binding WatchStatusLabel}" Background="{Binding WatchStatusBackground}" Foreground="{Binding WatchStatusForeground}"
                                                                 BorderThickness="0" CornerRadius="8" Padding="10,6" FontSize="13" FontWeight="SemiBold"
                                                                 Click="WatchStatus_Click" />
                                                     </Grid>
