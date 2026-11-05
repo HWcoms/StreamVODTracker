@@ -14,7 +14,7 @@ internal static class GoogleDriveOAuthClient
 {
     private const string DriveFileScope = "https://www.googleapis.com/auth/drive.file";
 
-    public static async Task<GoogleDriveCredentials> ConnectAsync(string clientId, string? loginHint, ILauncher launcher)
+    public static async Task<GoogleDriveCredentials> ConnectAsync(string clientId, string? clientSecret, string? loginHint, ILauncher launcher)
     {
         if (string.IsNullOrWhiteSpace(clientId)) throw new InvalidOperationException("Enter the Google OAuth desktop client ID.");
         var port = GetAvailablePort();
@@ -51,11 +51,13 @@ internal static class GoogleDriveOAuthClient
         if (string.IsNullOrWhiteSpace(code)) throw new InvalidOperationException("Google did not return an authorization code.");
 
         using var http = new HttpClient();
-        using var tokenResponse = await http.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(new Dictionary<string, string>
+        var tokenParameters = new Dictionary<string, string>
         {
             ["client_id"] = clientId.Trim(), ["code"] = code, ["code_verifier"] = verifier,
             ["grant_type"] = "authorization_code", ["redirect_uri"] = redirectUri
-        }));
+        };
+        if (!string.IsNullOrWhiteSpace(clientSecret)) tokenParameters["client_secret"] = clientSecret.Trim();
+        using var tokenResponse = await http.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(tokenParameters));
         using var tokenDocument = await ReadResponseAsync(tokenResponse, "Google did not issue an OAuth token.");
         var root = tokenDocument.RootElement;
         var access = GetString(root, "access_token");
@@ -71,13 +73,15 @@ internal static class GoogleDriveOAuthClient
         return new GoogleDriveCredentials(email, refresh);
     }
 
-    public static async Task<GoogleOAuthSession> RefreshAsync(string clientId, GoogleDriveCredentials credentials, CancellationToken cancellationToken = default)
+    public static async Task<GoogleOAuthSession> RefreshAsync(string clientId, string? clientSecret, GoogleDriveCredentials credentials, CancellationToken cancellationToken = default)
     {
         using var http = new HttpClient();
-        using var response = await http.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(new Dictionary<string, string>
+        var tokenParameters = new Dictionary<string, string>
         {
             ["client_id"] = clientId.Trim(), ["refresh_token"] = credentials.RefreshToken, ["grant_type"] = "refresh_token"
-        }), cancellationToken);
+        };
+        if (!string.IsNullOrWhiteSpace(clientSecret)) tokenParameters["client_secret"] = clientSecret.Trim();
+        using var response = await http.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(tokenParameters), cancellationToken);
         using var document = await ReadResponseAsync(response, "Google Drive access token could not be renewed.");
         var root = document.RootElement;
         var access = GetString(root, "access_token");

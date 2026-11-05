@@ -10,22 +10,27 @@ internal sealed record DriveLibraryPayload(int Version, DateTimeOffset UpdatedAt
 internal sealed class GoogleDriveSyncClient
 {
     private const string SyncFileName = "StreamVODTracker.sync.json";
+    private const string SyncFolderName = "StreamVODTracker";
+    private const string DriveFolderMimeType = "application/vnd.google-apps.folder";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(45) };
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _clientId;
+    private readonly string _clientSecret;
     private GoogleDriveCredentials _credentials;
     private string? _fileId;
+    private string? _folderId;
 
-    public GoogleDriveSyncClient(string clientId, GoogleDriveCredentials credentials)
+    public GoogleDriveSyncClient(string clientId, string clientSecret, GoogleDriveCredentials credentials)
     {
         _clientId = clientId;
+        _clientSecret = clientSecret;
         _credentials = credentials;
     }
 
     public async Task<IReadOnlyList<SavedChannelData>> DownloadLibraryAsync(CancellationToken cancellationToken = default)
     {
         var accessToken = await GetAccessTokenAsync(cancellationToken);
-        _fileId = await FindSyncFileIdAsync(accessToken, cancellationToken);
+        _fileId = await FindOrMigrateSyncFileAsync(accessToken, cancellationToken);
         if (_fileId is null) return [];
         using var request = AuthorizedRequest(HttpMethod.Get, $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(_fileId)}?alt=media", accessToken);
         using var response = await Http.SendAsync(request, cancellationToken);
@@ -44,36 +49,93 @@ internal sealed class GoogleDriveSyncClient
             channel.Media.Select(media => media with { ThumbnailUrl = null, ThumbnailPath = null }).ToArray())).ToArray();
         var bytes = JsonSerializer.SerializeToUtf8Bytes(new DriveLibraryPayload(1, DateTimeOffset.UtcNow, channels), JsonOptions);
         var accessToken = await GetAccessTokenAsync(cancellationToken);
-        _fileId ??= await FindSyncFileIdAsync(accessToken, cancellationToken);
+        _fileId ??= await FindOrMigrateSyncFileAsync(accessToken, cancellationToken);
         if (_fileId is null)
-            _fileId = await CreateSyncFileAsync(accessToken, bytes, cancellationToken);
+            _fileId = await CreateSyncFileAsync(accessToken, _folderId!, bytes, cancellationToken);
         else
             await UpdateSyncFileAsync(accessToken, _fileId, bytes, cancellationToken);
     }
 
     private async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
     {
-        var session = await GoogleDriveOAuthClient.RefreshAsync(_clientId, _credentials, cancellationToken);
+        var session = await GoogleDriveOAuthClient.RefreshAsync(_clientId, _clientSecret, _credentials, cancellationToken);
         _credentials = _credentials with { RefreshToken = session.RefreshToken };
         return session.AccessToken;
     }
 
-    private static async Task<string?> FindSyncFileIdAsync(string accessToken, CancellationToken cancellationToken)
+    private async Task<string?> FindOrMigrateSyncFileAsync(string accessToken, CancellationToken cancellationToken)
     {
-        var query = Uri.EscapeDataString($"name = '{SyncFileName}' and trashed = false");
+        _folderId ??= await FindOrCreateSyncFolderAsync(accessToken, cancellationToken);
+        var file = await FindSyncFileInFolderAsync(accessToken, _folderId, cancellationToken);
+        if (file is not null) return file.Id;
+
+        // Migrate the previously used root-level JSON file into the app folder.
+        var legacyFile = await FindSyncFileInFolderAsync(accessToken, "root", cancellationToken);
+        if (legacyFile is null) return null;
+        await MoveFileToFolderAsync(accessToken, legacyFile, _folderId, cancellationToken);
+        return legacyFile.Id;
+    }
+
+    private static async Task<DriveFileReference?> FindSyncFileInFolderAsync(
+        string accessToken, string parentId, CancellationToken cancellationToken)
+    {
+        var query = Uri.EscapeDataString($"name = '{SyncFileName}' and '{parentId}' in parents and trashed = false");
         using var request = AuthorizedRequest(HttpMethod.Get,
-            $"https://www.googleapis.com/drive/v3/files?q={query}&spaces=drive&pageSize=10&fields=files(id,name,modifiedTime)", accessToken);
+            $"https://www.googleapis.com/drive/v3/files?q={query}&spaces=drive&pageSize=10&fields=files(id,name,parents)", accessToken);
         using var response = await Http.SendAsync(request, cancellationToken);
         var body = await ReadBodyAsync(response, "Could not search Google Drive for the sync file.");
         using var document = JsonDocument.Parse(body);
         if (!document.RootElement.TryGetProperty("files", out var files) || files.GetArrayLength() == 0) return null;
-        return files[0].TryGetProperty("id", out var id) ? id.GetString() : null;
+        var file = files[0];
+        var id = file.TryGetProperty("id", out var idElement) ? idElement.GetString() : null;
+        if (string.IsNullOrWhiteSpace(id)) return null;
+        var parents = file.TryGetProperty("parents", out var parentElements)
+            ? parentElements.EnumerateArray().Select(item => item.GetString()).Where(item => !string.IsNullOrWhiteSpace(item)).Cast<string>().ToArray()
+            : [];
+        return new DriveFileReference(id, parents);
     }
 
-    private static async Task<string> CreateSyncFileAsync(string accessToken, byte[] bytes, CancellationToken cancellationToken)
+    private async Task<string> FindOrCreateSyncFolderAsync(string accessToken, CancellationToken cancellationToken)
+    {
+        var query = Uri.EscapeDataString($"name = '{SyncFolderName}' and mimeType = '{DriveFolderMimeType}' and 'root' in parents and trashed = false");
+        using (var request = AuthorizedRequest(HttpMethod.Get,
+                   $"https://www.googleapis.com/drive/v3/files?q={query}&spaces=drive&pageSize=10&fields=files(id,name)", accessToken))
+        using (var response = await Http.SendAsync(request, cancellationToken))
+        {
+            var body = await ReadBodyAsync(response, "Could not search Google Drive for the app folder.");
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.TryGetProperty("files", out var files) && files.GetArrayLength() > 0 &&
+                files[0].TryGetProperty("id", out var id) && !string.IsNullOrWhiteSpace(id.GetString()))
+                return id.GetString()!;
+        }
+
+        using var createRequest = AuthorizedRequest(HttpMethod.Post, "https://www.googleapis.com/drive/v3/files?fields=id", accessToken);
+        createRequest.Content = new StringContent(JsonSerializer.Serialize(new { name = SyncFolderName, mimeType = DriveFolderMimeType }),
+            Encoding.UTF8, "application/json");
+        using var createResponse = await Http.SendAsync(createRequest, cancellationToken);
+        var createBody = await ReadBodyAsync(createResponse, "Could not create the app folder in Google Drive.");
+        using var createdFolder = JsonDocument.Parse(createBody);
+        return createdFolder.RootElement.GetProperty("id").GetString()
+               ?? throw new InvalidOperationException("Google Drive did not return a folder ID.");
+    }
+
+    private static async Task MoveFileToFolderAsync(string accessToken, DriveFileReference file, string folderId,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new List<string> { $"addParents={Uri.EscapeDataString(folderId)}" };
+        if (file.Parents.FirstOrDefault() is { Length: > 0 } currentParent)
+            parameters.Add($"removeParents={Uri.EscapeDataString(currentParent)}");
+        using var request = AuthorizedRequest(HttpMethod.Patch,
+            $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(file.Id)}?{string.Join('&', parameters)}", accessToken);
+        request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var response = await Http.SendAsync(request, cancellationToken);
+        _ = await ReadBodyAsync(response, "Could not move the existing sync file into the app folder.");
+    }
+
+    private static async Task<string> CreateSyncFileAsync(string accessToken, string folderId, byte[] bytes, CancellationToken cancellationToken)
     {
         using var content = new MultipartContent("related");
-        content.Add(new StringContent(JsonSerializer.Serialize(new { name = SyncFileName, mimeType = "application/json" }), Encoding.UTF8, "application/json"));
+        content.Add(new StringContent(JsonSerializer.Serialize(new { name = SyncFileName, mimeType = "application/json", parents = new[] { folderId } }), Encoding.UTF8, "application/json"));
         var media = new ByteArrayContent(bytes);
         media.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         content.Add(media);
@@ -103,6 +165,8 @@ internal sealed class GoogleDriveSyncClient
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         return request;
     }
+
+    private sealed record DriveFileReference(string Id, string[] Parents);
 
     private static async Task<string> ReadBodyAsync(HttpResponseMessage response, string fallback)
     {

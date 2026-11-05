@@ -35,6 +35,10 @@ public sealed class AppSettingsStore
 
     public void SaveGoogleOAuthClientId(string clientId) => SaveValue("GoogleDrive", "OAuthClientId", clientId.Trim());
 
+    public string LoadGoogleOAuthClientSecret() => LoadValue("GoogleDrive", "OAuthClientSecret") ?? "";
+
+    public void SaveGoogleOAuthClientSecret(string clientSecret) => SaveValue("GoogleDrive", "OAuthClientSecret", clientSecret.Trim());
+
     public string LoadVideoPlayerPath() => LoadValue("Playback", "PlayerPath") ?? "";
 
     public void SaveVideoPlayerPath(string path) => SaveValue("Playback", "PlayerPath", path);

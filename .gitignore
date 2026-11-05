@@ -49,3 +49,10 @@ packages/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Local secrets and tokens
+/NeverCommit/
+**/settings/settings.ini
+**/credentials*.json
+**/client_secret*.json
+**/token*.json

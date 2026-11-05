@@ -22,6 +22,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<MediaCard> _allCards = [];
     private readonly ObservableCollection<MediaCard> _visibleCards = [];
     private readonly List<MediaCard> _filteredCards = [];
+    private readonly Dictionary<string, SavedChannelData> _lastSavedDriveSnapshots = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _soopNextPageByChannel = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _soopHasMoreByChannel = new(StringComparer.OrdinalIgnoreCase);
     private const int InitialCardDisplayLimit = 120;
@@ -56,6 +57,9 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _channelStatusTimer = new() { Interval = TimeSpan.FromMinutes(2) };
     private readonly DispatcherTimer _searchDurationRefreshTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private readonly DispatcherTimer _refreshNotificationTimer = new() { Interval = TimeSpan.FromSeconds(3) };
+    private readonly DispatcherTimer _driveSyncNotificationTimer = new() { Interval = TimeSpan.FromSeconds(4) };
+    private readonly DispatcherTimer _syncSpinnerTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
+    private double _syncSpinnerAngle;
     private bool _isDarkTheme;
     private bool _isLoadingSettings = true;
     private bool _sortDescending = true;
@@ -99,6 +103,17 @@ public partial class MainWindow : Window
             _refreshNotificationTimer.Stop();
             RefreshNotification.IsVisible = false;
         };
+        _driveSyncNotificationTimer.Tick += (_, _) =>
+        {
+            _driveSyncNotificationTimer.Stop();
+            DriveSyncNotification.IsVisible = false;
+        };
+        DriveSyncNotificationSpinner.RenderTransform = new RotateTransform();
+        _syncSpinnerTimer.Tick += (_, _) =>
+        {
+            _syncSpinnerAngle = (_syncSpinnerAngle + 30) % 360;
+            ((RotateTransform)DriveSyncNotificationSpinner.RenderTransform!).Angle = _syncSpinnerAngle;
+        };
         _driveUploadTimer.Tick += DriveUploadTimer_Tick;
         _channelStatusTimer.Start();
         _ = RestoreGoogleDriveAndSyncAsync();
@@ -107,6 +122,8 @@ public partial class MainWindow : Window
             _channelStatusTimer.Stop();
             _searchDurationRefreshTimer.Stop();
             _refreshNotificationTimer.Stop();
+            _driveSyncNotificationTimer.Stop();
+            _syncSpinnerTimer.Stop();
             _driveUploadTimer.Stop();
             foreach (var channel in _channels) channel.Dispose();
             foreach (var card in _allCards) card.Dispose();
@@ -186,8 +203,11 @@ public partial class MainWindow : Window
 
     private void LoadLocalDatabase()
     {
+        _lastSavedDriveSnapshots.Clear();
         foreach (var saved in _vodRepository.LoadAll())
         {
+            _lastSavedDriveSnapshots[GetSyncChannelKey(saved.Channel.Platform, saved.Channel.ChannelId)] =
+                NormalizeDriveSnapshot(saved);
             var channel = new ChannelEntry(saved.Channel.Platform, saved.Channel.ChannelId, saved.Channel.Name,
                 saved.Channel.Description, saved.Channel.Url);
             channel.ProfileImageUrl = saved.Channel.ProfileImageUrl;
@@ -232,26 +252,77 @@ public partial class MainWindow : Window
     {
         if (_channels.Contains(channel))
         {
-            _vodRepository.Save(channel, _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl));
-            if (!_isSyncingDrive && _driveSyncClient is not null)
+            var cards = _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray();
+            var snapshot = CreateDriveSnapshot(channel, cards);
+            var key = GetSyncChannelKey(channel.Platform, channel.ChannelId);
+            var hasDriveDataChanged = !_lastSavedDriveSnapshots.TryGetValue(key, out var previousSnapshot) ||
+                                      !DriveSnapshotsEqual(previousSnapshot, snapshot);
+            _vodRepository.Save(channel, cards);
+            _lastSavedDriveSnapshots[key] = snapshot;
+            if (hasDriveDataChanged && !_isSyncingDrive && _driveSyncClient is not null)
             {
                 _driveUploadPending = true;
+                ShowGoogleDriveSyncProgress();
                 _driveUploadTimer.Stop();
                 _driveUploadTimer.Start();
             }
         }
     }
 
+    private static SavedChannelData CreateDriveSnapshot(ChannelEntry channel, IEnumerable<MediaCard> cards)
+    {
+        var savedChannel = new SavedChannel(channel.Platform, channel.ChannelId, channel.DisplayName,
+            channel.Description, channel.ChannelUrl, null, null);
+        var savedMedia = cards.Select(card => new SavedMedia(
+            card.Title,
+            card.PlatformLabel,
+            string.IsNullOrWhiteSpace(card.OnlineUrl) ? "파일" : "URL",
+            "",
+            "",
+            card.PublishedAt,
+            card.WatchStatusLabel,
+            null,
+            null,
+            "",
+            card.OnlineUrl,
+            card.LocalFilePath,
+            card.VodId,
+            card.LastPositionSeconds,
+            card.Memo,
+            card.UpdatedAt)).ToArray();
+        return NormalizeDriveSnapshot(new SavedChannelData(savedChannel, savedMedia));
+    }
+
+    private static bool DriveSnapshotsEqual(SavedChannelData left, SavedChannelData right) =>
+        left.Channel == right.Channel && left.Media.SequenceEqual(right.Media);
+
+    private static SavedChannelData NormalizeDriveSnapshot(SavedChannelData saved) => new(
+        saved.Channel with { ProfileImageUrl = null, ProfileImagePath = null },
+        saved.Media.Select(media => media with
+        {
+            SourceLabel = "",
+            SourceValue = "",
+            ThumbnailUrl = null,
+            ThumbnailPath = null,
+            Availability = "",
+            UpdatedAt = null
+        }).OrderBy(media => media.VodId, StringComparer.OrdinalIgnoreCase).ToArray());
+
     private async void DriveUploadTimer_Tick(object? sender, EventArgs e)
     {
         _driveUploadTimer.Stop();
         if (_driveSyncClient is null || !_driveUploadPending) return;
         _driveUploadPending = false;
-        try { await _driveSyncClient.UploadLibraryAsync(_localDatabase.LoadAll()); }
+        ShowGoogleDriveSyncProgress();
+        try
+        {
+            await _driveSyncClient.UploadLibraryAsync(_localDatabase.LoadAll());
+            ShowDriveSyncNotification("Google Drive와 동기화 완료");
+        }
         catch (Exception exception)
         {
             Debug.WriteLine($"Google Drive background sync failed: {exception.Message}");
-            ShowRefreshNotification($"Google Drive sync failed: {exception.Message}", isError: true);
+            ShowDriveSyncNotification($"Google Drive sync failed: {exception.Message}", isError: true);
         }
     }
 
@@ -267,7 +338,7 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             Debug.WriteLine($"Google Drive startup sync failed: {exception.Message}");
-            ShowRefreshNotification($"Google Drive sync failed: {exception.Message}", isError: true);
+            ShowDriveSyncNotification($"Google Drive sync failed: {exception.Message}", isError: true);
         }
     }
 
@@ -278,8 +349,9 @@ public partial class MainWindow : Window
         _isSyncingDrive = true;
         _driveUploadPending = false;
         _driveUploadTimer.Stop();
-        var client = new GoogleDriveSyncClient(clientId, credentials);
+        var client = new GoogleDriveSyncClient(clientId, _settingsStore.LoadGoogleOAuthClientSecret(), credentials);
         _driveSyncClient = client;
+        ShowGoogleDriveSyncProgress();
         try
         {
             var local = _localDatabase.LoadAll();
@@ -339,9 +411,14 @@ public partial class MainWindow : Window
             LoadLocalDatabase();
             UpdateCards();
             UpdateVisibleChannels();
+            ShowDriveSyncNotification("Google Drive와 동기화 완료");
             return merged.Count;
         }
-        finally { _isSyncingDrive = false; }
+        finally
+        {
+            StopGoogleDriveSyncAnimation();
+            _isSyncingDrive = false;
+        }
     }
 
     private static string GetSyncChannelKey(string platform, string channelId) => $"{platform}:{channelId}";
@@ -800,6 +877,7 @@ public partial class MainWindow : Window
             try
             {
                 _vodRepository.Delete(channel);
+                _lastSavedDriveSnapshots.Remove(GetSyncChannelKey(channel.Platform, channel.ChannelId));
             }
             catch (Exception exception)
             {
@@ -821,6 +899,7 @@ public partial class MainWindow : Window
         if (_driveSyncClient is not null)
         {
             _driveUploadPending = true;
+            ShowGoogleDriveSyncProgress();
             _driveUploadTimer.Stop();
             _driveUploadTimer.Start();
         }
@@ -2139,6 +2218,32 @@ public partial class MainWindow : Window
         _refreshNotificationTimer.Start();
     }
 
+    private void ShowGoogleDriveSyncProgress()
+    {
+        _driveSyncNotificationTimer.Stop();
+        DriveSyncNotificationText.Text = "Google Drive와 동기화 중...";
+        DriveSyncNotification.BorderBrush = new SolidColorBrush(Color.Parse("#35B879"));
+        DriveSyncNotificationSpinner.IsVisible = true;
+        DriveSyncNotification.IsVisible = true;
+        _syncSpinnerTimer.Start();
+    }
+
+    private void ShowDriveSyncNotification(string message, bool isError = false)
+    {
+        StopGoogleDriveSyncAnimation();
+        DriveSyncNotificationText.Text = message;
+        DriveSyncNotification.BorderBrush = new SolidColorBrush(Color.Parse(isError ? "#E05D68" : "#35B879"));
+        DriveSyncNotification.IsVisible = true;
+        _driveSyncNotificationTimer.Stop();
+        _driveSyncNotificationTimer.Start();
+    }
+
+    private void StopGoogleDriveSyncAnimation()
+    {
+        _syncSpinnerTimer.Stop();
+        DriveSyncNotificationSpinner.IsVisible = false;
+    }
+
     private async void CardsScroller_ScrollChanged(object? sender, ScrollChangedEventArgs e)
     {
         if (sender is not ScrollViewer scroller || _isLoadingMoreAtScrollEnd) return;
@@ -3291,15 +3396,27 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
 
     public void UpdateDetails(string title, DateTimeOffset? publishedAt, string? onlineUrl, string? localFilePath, string? vodId = null)
     {
-        var sourceChanged = !string.Equals(_onlineUrl, NullIfBlank(onlineUrl), StringComparison.OrdinalIgnoreCase) ||
-                            !string.Equals(_localFilePath, NullIfBlank(localFilePath), StringComparison.OrdinalIgnoreCase);
+        var normalizedOnlineUrl = NullIfBlank(onlineUrl);
+        var normalizedLocalFilePath = NullIfBlank(localFilePath);
+        var normalizedVodId = string.IsNullOrWhiteSpace(vodId)
+            ? LibraryTransfer.GetVodId(PlatformLabel, normalizedOnlineUrl ?? "", normalizedLocalFilePath ?? "", title)
+            : vodId;
+        var detailsChanged = !string.Equals(_title, title, StringComparison.Ordinal) ||
+                             _publishedAt != publishedAt ||
+                             !string.Equals(_onlineUrl, normalizedOnlineUrl, StringComparison.Ordinal) ||
+                             !string.Equals(_localFilePath, normalizedLocalFilePath, StringComparison.Ordinal) ||
+                             !string.Equals(_vodId, normalizedVodId, StringComparison.Ordinal);
+        if (!detailsChanged) return;
+
+        var sourceChanged = !string.Equals(_onlineUrl, normalizedOnlineUrl, StringComparison.OrdinalIgnoreCase) ||
+                            !string.Equals(_localFilePath, normalizedLocalFilePath, StringComparison.OrdinalIgnoreCase);
         _title = title;
         _publishedAt = publishedAt;
-        _onlineUrl = NullIfBlank(onlineUrl);
-        _localFilePath = NullIfBlank(localFilePath);
+        _onlineUrl = normalizedOnlineUrl;
+        _localFilePath = normalizedLocalFilePath;
         if (sourceChanged)
             SetDuration(null);
-        _vodId = string.IsNullOrWhiteSpace(vodId) ? LibraryTransfer.GetVodId(PlatformLabel, _onlineUrl ?? "", _localFilePath ?? "", title) : vodId;
+        _vodId = normalizedVodId;
         _updatedAt = DateTimeOffset.UtcNow;
         RefreshSourceLabels();
         OnPropertyChanged(nameof(Title));

@@ -6,7 +6,7 @@ The app creates one `StreamVODTracker.sync.json` metadata file in the signed-in 
 
 1. Create a Google Cloud project and enable the Google Drive API.
 2. Configure the OAuth consent screen as **External**, request only `openid`, `email`, and `https://www.googleapis.com/auth/drive.file`, then publish the consent screen to **In production**. While it is in Testing, Google refresh tokens for Drive access expire after seven days.
-3. Create an OAuth client of type **Desktop app** and paste its Client ID into the app's Settings. The same app Client ID is used by all installations; users do not create their own client IDs.
+3. Create an OAuth client of type **Desktop app** and paste its Client ID into the app's Settings. If the token endpoint reports that `client_secret` is missing, enter the matching Desktop client secret in the optional field. Desktop clients are public clients; the secret is not confidential. The same app Client ID is used by all installations; users do not create their own client IDs.
 4. Each user connects their own Google account once on each device. The refresh token is saved in Windows Credential Manager, not the password. On later starts the app refreshes the token and syncs automatically.
 
 ## How sync behaves

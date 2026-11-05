@@ -20,8 +20,13 @@ public sealed class SettingsWindow : Window
     private readonly TextBlock _driveClientIdLabel;
     private readonly ComboBox _themePicker;
     private readonly TextBox _driveClientIdInput;
-    private readonly TextBox _driveAccountInput;
+    private readonly TextBox _driveClientSecretInput;
+    private readonly Button _openOAuthClientsButton;
+    private readonly TextBlock _driveAccountText;
+    private readonly TextBlock _driveAccountEmail;
+    private readonly Border _driveAccountEmailBorder;
     private readonly Button _driveConnectButton;
+    private readonly Button _driveDisconnectButton;
     private readonly Button _driveSyncButton;
     private readonly Border _themeCard;
     private readonly Border _driveCard;
@@ -36,6 +41,7 @@ public sealed class SettingsWindow : Window
     private readonly AppSettingsStore _settingsStore;
     private readonly List<PlayerOption> _playerOptions = [];
     private bool _handlingPlayerSelection;
+    private bool _connectingGoogleAccount;
     private bool _updatingArguments;
     private int _lastPlayerSelectionIndex;
     private string _activeArgumentsPlayerPath = "";
@@ -196,16 +202,62 @@ public sealed class SettingsWindow : Window
         {
             Text = _settingsStore.LoadGoogleOAuthClientId(),
             PlaceholderText = "1234567890-abcdef.apps.googleusercontent.com",
-            MinHeight = 38
+            MinHeight = 38,
+            HorizontalAlignment = HorizontalAlignment.Stretch
         };
-        _driveAccountInput = new TextBox
+        _driveClientSecretInput = new TextBox
         {
-            Text = savedDriveCredentials?.Email ?? "",
-            PlaceholderText = "Google 계정 이메일 (선택)",
-            MinHeight = 38
+            Text = _settingsStore.LoadGoogleOAuthClientSecret(),
+            PlaceholderText = "필요한 경우 Desktop client secret 입력",
+            MinHeight = 38,
+            PasswordChar = '•'
         };
-        _driveConnectButton = new Button { Content = "Google 계정 연결 및 동기화", MinHeight = 38 };
-        _driveSyncButton = new Button { Content = "저장된 Google 계정으로 지금 동기화", MinHeight = 38 };
+        _openOAuthClientsButton = new Button { Content = "OAuth Client 등록", MinHeight = 38 };
+        var oauthClientRow = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            ColumnSpacing = 8,
+            Children = { _driveClientIdInput, _openOAuthClientsButton }
+        };
+        Grid.SetColumn(_openOAuthClientsButton, 1);
+        _driveAccountText = new TextBlock
+        {
+            Text = "연결된 계정:",
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 14,
+            FontWeight = FontWeight.SemiBold
+        };
+        _driveAccountEmail = new TextBlock
+        {
+            Text = savedDriveCredentials?.Email ?? (driveReadError is null ? "없음" : "확인 실패"),
+            FontSize = 14,
+            FontWeight = FontWeight.Medium,
+            TextWrapping = TextWrapping.Wrap
+        };
+        _driveAccountEmailBorder = new Border
+        {
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Padding = new Thickness(9, 5),
+            Child = _driveAccountEmail
+        };
+        var driveAccountRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 9,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _driveAccountText, _driveAccountEmailBorder }
+        };
+        _driveConnectButton = new Button { Content = "Google 계정 연결/변경", MinHeight = 38 };
+        _driveDisconnectButton = new Button { Content = "연결 해제", MinHeight = 38 };
+        var driveAccountActions = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            ColumnSpacing = 8,
+            Children = { _driveConnectButton, _driveDisconnectButton }
+        };
+        Grid.SetColumn(_driveDisconnectButton, 1);
+        _driveSyncButton = new Button { Content = "동기화", MinHeight = 38 };
         _driveCard = new Border
         {
             BorderThickness = new Thickness(1),
@@ -215,7 +267,9 @@ public sealed class SettingsWindow : Window
             {
                 Spacing = 9,
                 Children = { _driveTitle, _driveDescription, _driveStatus, _driveClientIdLabel,
-                    _driveClientIdInput, _driveAccountInput, _driveConnectButton, _driveSyncButton }
+                    oauthClientRow,
+                    new TextBlock { Text = "Client Secret (선택)", FontSize = 12, FontWeight = FontWeight.SemiBold },
+                    _driveClientSecretInput, driveAccountRow, driveAccountActions, _driveSyncButton }
             }
         };
         _themePicker.SelectionChanged += (_, _) =>
@@ -225,9 +279,13 @@ public sealed class SettingsWindow : Window
             ApplyDialogTheme(useDarkTheme);
         };
         _driveClientIdInput.LostFocus += (_, _) => SaveGoogleOAuthClientId();
+        _driveClientSecretInput.LostFocus += (_, _) => SaveGoogleOAuthClientSecret();
+        _openOAuthClientsButton.Click += async (_, _) =>
+            await Launcher.LaunchUriAsync(new Uri("https://console.cloud.google.com/auth/clients"));
         _driveConnectButton.Click += async (_, _) => await ConnectGoogleAccountAsync();
+        _driveDisconnectButton.Click += (_, _) => DisconnectGoogleAccount();
         _driveSyncButton.Click += async (_, _) => await SyncSavedGoogleAccountAsync();
-        Closed += (_, _) => SaveGoogleOAuthClientId();
+        Closed += (_, _) => { SaveGoogleOAuthClientId(); SaveGoogleOAuthClientSecret(); };
         var content = new StackPanel
         {
             Spacing = 18,
@@ -245,16 +303,58 @@ public sealed class SettingsWindow : Window
 
     private void SaveGoogleOAuthClientId() => _settingsStore.SaveGoogleOAuthClientId(_driveClientIdInput.Text ?? "");
 
+    private void SaveGoogleOAuthClientSecret() => _settingsStore.SaveGoogleOAuthClientSecret(_driveClientSecretInput.Text ?? "");
+
     private async Task ConnectGoogleAccountAsync()
     {
         if (!OperatingSystem.IsWindows()) { _driveStatus.Text = "현재 Google Drive 로그인 저장은 Windows에서 지원합니다."; return; }
-        SaveGoogleOAuthClientId();
-        await RunGoogleDriveSyncAsync(async () =>
+        if (_connectingGoogleAccount)
         {
-            var credentials = await GoogleDriveOAuthClient.ConnectAsync(_driveClientIdInput.Text ?? "", _driveAccountInput.Text, Launcher);
-            if (OperatingSystem.IsWindows()) WindowsCredentialVault.SaveGoogleDrive(credentials);
-            return credentials;
-        });
+            _driveStatus.Text = "Google 계정 인증이 이미 진행 중입니다.";
+            return;
+        }
+        _connectingGoogleAccount = true;
+        SaveGoogleOAuthClientId();
+        SaveGoogleOAuthClientSecret();
+        _driveSyncButton.IsEnabled = false;
+        _driveDisconnectButton.IsEnabled = false;
+        _driveStatus.Text = "Google 계정 연결 대기 중...";
+        try
+        {
+            var credentials = await GoogleDriveOAuthClient.ConnectAsync(_driveClientIdInput.Text ?? "", _driveClientSecretInput.Text, null, Launcher);
+            WindowsCredentialVault.SaveGoogleDrive(credentials);
+            var savedCredentials = WindowsCredentialVault.ReadGoogleDrive()
+                ?? throw new InvalidOperationException("Google 계정 연결은 완료됐지만 Windows에 로그인 정보를 저장하지 못했습니다. 다시 연결해 주세요.");
+            _driveAccountEmail.Text = savedCredentials.Email;
+            _driveStatus.Text = $"연결됨: {savedCredentials.Email}. 데이터를 동기화하려면 동기화 버튼을 누르세요.";
+        }
+        catch (Exception exception) { _driveStatus.Text = $"Google 계정 연결 실패: {exception.Message}"; }
+        finally
+        {
+            _connectingGoogleAccount = false;
+            _driveSyncButton.IsEnabled = true;
+            _driveDisconnectButton.IsEnabled = true;
+        }
+    }
+
+    private void DisconnectGoogleAccount()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            _driveStatus.Text = "현재 Google Drive 로그인 저장은 Windows에서 지원합니다.";
+            return;
+        }
+
+        try
+        {
+            WindowsCredentialVault.DeleteGoogleDrive();
+            _driveAccountEmail.Text = "없음";
+            _driveStatus.Text = "이 PC에서 Google 계정 연결을 해제했습니다. Drive 동기화 파일은 삭제하지 않았습니다.";
+        }
+        catch (Exception exception)
+        {
+            _driveStatus.Text = $"Google 계정 연결 해제 실패: {exception.Message}";
+        }
     }
 
     private async Task SyncSavedGoogleAccountAsync()
@@ -268,12 +368,13 @@ public sealed class SettingsWindow : Window
     private async Task RunGoogleDriveSyncAsync(Func<Task<GoogleDriveCredentials>> getCredentials)
     {
         _driveConnectButton.IsEnabled = false;
+        _driveDisconnectButton.IsEnabled = false;
         _driveSyncButton.IsEnabled = false;
         _driveStatus.Text = "Google Drive 연결 및 동기화 중...";
         try
         {
             var credentials = await getCredentials();
-            _driveAccountInput.Text = credentials.Email;
+            _driveAccountEmail.Text = credentials.Email;
             var count = await _syncGoogleDrive(credentials);
             _driveStatus.Text = $"{credentials.Email} 계정 동기화 완료 ({count}개 채널)";
         }
@@ -281,6 +382,7 @@ public sealed class SettingsWindow : Window
         finally
         {
             _driveConnectButton.IsEnabled = true;
+            _driveDisconnectButton.IsEnabled = true;
             _driveSyncButton.IsEnabled = true;
         }
     }
@@ -302,6 +404,10 @@ public sealed class SettingsWindow : Window
         _driveDescription.Foreground = new SolidColorBrush(secondaryText);
         _driveClientIdLabel.Foreground = new SolidColorBrush(primaryText);
         _driveStatus.Foreground = new SolidColorBrush(Color.Parse(isDark ? "#C8BFFF" : "#6045D4"));
+        _driveAccountText.Foreground = new SolidColorBrush(primaryText);
+        _driveAccountEmail.Foreground = new SolidColorBrush(primaryText);
+        _driveAccountEmailBorder.Background = new SolidColorBrush(Color.Parse(isDark ? "#1D2029" : "#FFFFFF"));
+        _driveAccountEmailBorder.BorderBrush = new SolidColorBrush(border);
 
         foreach (var card in new[] { _themeCard, _driveCard })
         {
@@ -312,13 +418,13 @@ public sealed class SettingsWindow : Window
         _themePicker.Background = new SolidColorBrush(inputBackground);
         _themePicker.Foreground = new SolidColorBrush(primaryText);
         _themePicker.BorderBrush = new SolidColorBrush(border);
-        foreach (var input in new[] { _driveClientIdInput, _driveAccountInput })
+        foreach (var input in new[] { _driveClientIdInput, _driveClientSecretInput })
         {
             input.Background = new SolidColorBrush(inputBackground);
             input.Foreground = new SolidColorBrush(primaryText);
             input.BorderBrush = new SolidColorBrush(border);
         }
-        foreach (var button in new[] { _driveConnectButton, _driveSyncButton })
+        foreach (var button in new[] { _driveConnectButton, _driveDisconnectButton, _driveSyncButton, _openOAuthClientsButton })
         {
             button.Background = new SolidColorBrush(Color.Parse("#7156E8"));
             button.Foreground = Brushes.White;

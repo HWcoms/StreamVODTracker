@@ -532,11 +532,22 @@
                 </Grid>
             </Border>
         </Grid>
-        <Border x:Name="RefreshNotification" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                Margin="0,0,58,48" Padding="16,11" CornerRadius="10" Background="#252836"
-                BorderBrush="#35B879" BorderThickness="1" IsVisible="False" IsHitTestVisible="False">
-            <TextBlock x:Name="RefreshNotificationText" Foreground="White" FontSize="13" FontWeight="SemiBold" />
-        </Border>
+        <StackPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                    Margin="0,0,58,48" Spacing="8" IsHitTestVisible="False">
+            <Border x:Name="DriveSyncNotification" HorizontalAlignment="Right" Padding="16,11" CornerRadius="10"
+                    Background="#252836" BorderBrush="#35B879" BorderThickness="1" IsVisible="False">
+                <StackPanel Orientation="Horizontal" Spacing="9" VerticalAlignment="Center">
+                    <TextBlock x:Name="DriveSyncNotificationSpinner" Text="⟳" Foreground="White" FontSize="19"
+                               VerticalAlignment="Center" IsVisible="False" RenderTransformOrigin="50%,50%" />
+                    <TextBlock x:Name="DriveSyncNotificationText" Foreground="White" FontSize="13" FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+            </Border>
+            <Border x:Name="RefreshNotification" HorizontalAlignment="Right" Padding="16,11" CornerRadius="10"
+                    Background="#252836" BorderBrush="#35B879" BorderThickness="1" IsVisible="False">
+                <TextBlock x:Name="RefreshNotificationText" Foreground="White" FontSize="13" FontWeight="SemiBold" />
+            </Border>
+        </StackPanel>
     </Grid>
 
     <Window.Styles>
