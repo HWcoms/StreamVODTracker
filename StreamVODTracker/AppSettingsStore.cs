@@ -39,6 +39,14 @@ public sealed class AppSettingsStore
 
     public void SaveGoogleOAuthClientSecret(string clientSecret) => SaveValue("GoogleDrive", "OAuthClientSecret", clientSecret.Trim());
 
+    public int LoadDriveCheckIntervalSeconds()
+    {
+        var seconds = int.TryParse(LoadValue("GoogleDrive", "CheckIntervalSeconds"), out var value) ? value : 90;
+        return Math.Clamp(seconds, 1, 86400);
+    }
+
+    public void SaveDriveCheckIntervalSeconds(int seconds) => SaveValue("GoogleDrive", "CheckIntervalSeconds", Math.Clamp(seconds, 1, 86400).ToString());
+
     public string LoadVideoPlayerPath() => LoadValue("Playback", "PlayerPath") ?? "";
 
     public void SaveVideoPlayerPath(string path) => SaveValue("Playback", "PlayerPath", path);

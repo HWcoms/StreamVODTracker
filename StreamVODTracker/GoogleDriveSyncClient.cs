@@ -19,6 +19,9 @@ internal sealed class GoogleDriveSyncClient
     private GoogleDriveCredentials _credentials;
     private string? _fileId;
     private string? _folderId;
+    private string? _lastModifiedTime;
+    private string? _accessToken;
+    private DateTimeOffset _accessTokenExpiresAt;
 
     public GoogleDriveSyncClient(string clientId, string clientSecret, GoogleDriveCredentials credentials)
     {
@@ -32,6 +35,7 @@ internal sealed class GoogleDriveSyncClient
         var accessToken = await GetAccessTokenAsync(cancellationToken);
         _fileId = await FindOrMigrateSyncFileAsync(accessToken, cancellationToken);
         if (_fileId is null) return [];
+        _lastModifiedTime = await GetModifiedTimeAsync(accessToken, _fileId, cancellationToken);
         using var request = AuthorizedRequest(HttpMethod.Get, $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(_fileId)}?alt=media", accessToken);
         using var response = await Http.SendAsync(request, cancellationToken);
         var body = await ReadBodyAsync(response, "Could not download the VOD Tracker sync file.");
@@ -40,6 +44,15 @@ internal sealed class GoogleDriveSyncClient
         return payload.Channels.Select(channel => new SavedChannelData(
             channel.Channel with { ProfileImageUrl = null, ProfileImagePath = null },
             channel.Media.Select(media => media with { ThumbnailUrl = null, ThumbnailPath = null }).ToArray())).ToArray();
+    }
+
+    public async Task<bool> HasRemoteChangesAsync(CancellationToken cancellationToken = default)
+    {
+        var accessToken = await GetAccessTokenAsync(cancellationToken);
+        _fileId ??= await FindOrMigrateSyncFileAsync(accessToken, cancellationToken);
+        if (_fileId is null) return false;
+        var modifiedTime = await GetModifiedTimeAsync(accessToken, _fileId, cancellationToken);
+        return modifiedTime is not null && !string.Equals(modifiedTime, _lastModifiedTime, StringComparison.Ordinal);
     }
 
     public async Task UploadLibraryAsync(IEnumerable<SavedChannelData> library, CancellationToken cancellationToken = default)
@@ -54,13 +67,29 @@ internal sealed class GoogleDriveSyncClient
             _fileId = await CreateSyncFileAsync(accessToken, _folderId!, bytes, cancellationToken);
         else
             await UpdateSyncFileAsync(accessToken, _fileId, bytes, cancellationToken);
+        if (_fileId is not null) _lastModifiedTime = await GetModifiedTimeAsync(accessToken, _fileId, cancellationToken);
+    }
+
+    private static async Task<string?> GetModifiedTimeAsync(string accessToken, string fileId, CancellationToken cancellationToken)
+    {
+        using var request = AuthorizedRequest(HttpMethod.Get,
+            $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}?fields=modifiedTime,trashed", accessToken);
+        using var response = await Http.SendAsync(request, cancellationToken);
+        var body = await ReadBodyAsync(response, "Could not check the Google Drive sync file status.");
+        using var document = JsonDocument.Parse(body);
+        if (document.RootElement.TryGetProperty("trashed", out var trashed) && trashed.GetBoolean()) return null;
+        return document.RootElement.TryGetProperty("modifiedTime", out var modifiedTime) ? modifiedTime.GetString() : null;
     }
 
     private async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
     {
+        if (!string.IsNullOrWhiteSpace(_accessToken) && DateTimeOffset.UtcNow < _accessTokenExpiresAt)
+            return _accessToken;
         var session = await GoogleDriveOAuthClient.RefreshAsync(_clientId, _clientSecret, _credentials, cancellationToken);
         _credentials = _credentials with { RefreshToken = session.RefreshToken };
-        return session.AccessToken;
+        _accessToken = session.AccessToken;
+        _accessTokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Max(1, session.ExpiresIn - 120));
+        return _accessToken;
     }
 
     private async Task<string?> FindOrMigrateSyncFileAsync(string accessToken, CancellationToken cancellationToken)

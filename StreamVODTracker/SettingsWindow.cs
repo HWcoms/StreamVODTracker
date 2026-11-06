@@ -21,6 +21,9 @@ public sealed class SettingsWindow : Window
     private readonly ComboBox _themePicker;
     private readonly TextBox _driveClientIdInput;
     private readonly TextBox _driveClientSecretInput;
+    private readonly TextBox _driveCheckHoursInput;
+    private readonly TextBox _driveCheckMinutesInput;
+    private readonly TextBox _driveCheckSecondsInput;
     private readonly Button _openOAuthClientsButton;
     private readonly TextBlock _driveAccountText;
     private readonly TextBlock _driveAccountEmail;
@@ -46,12 +49,14 @@ public sealed class SettingsWindow : Window
     private int _lastPlayerSelectionIndex;
     private string _activeArgumentsPlayerPath = "";
     private readonly Func<GoogleDriveCredentials, Task<int>> _syncGoogleDrive;
+    private readonly Action<TimeSpan> _setDriveCheckInterval;
 
     internal SettingsWindow(bool isDarkTheme, Action<bool> setTheme, AppSettingsStore settingsStore,
-        Func<GoogleDriveCredentials, Task<int>> syncGoogleDrive)
+        Func<GoogleDriveCredentials, Task<int>> syncGoogleDrive, Action<TimeSpan> setDriveCheckInterval)
     {
         _settingsStore = settingsStore;
         _syncGoogleDrive = syncGoogleDrive;
+        _setDriveCheckInterval = setDriveCheckInterval;
         Title = "설정";
         Width = 560;
         Height = 720;
@@ -212,6 +217,21 @@ public sealed class SettingsWindow : Window
             MinHeight = 38,
             PasswordChar = '•'
         };
+        var intervalSeconds = _settingsStore.LoadDriveCheckIntervalSeconds();
+        _driveCheckHoursInput = CreateIntervalInput(intervalSeconds / 3600);
+        _driveCheckMinutesInput = CreateIntervalInput(intervalSeconds % 3600 / 60);
+        _driveCheckSecondsInput = CreateIntervalInput(intervalSeconds % 60);
+        var intervalRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Children =
+            {
+                _driveCheckHoursInput, new TextBlock { Text = "시", VerticalAlignment = VerticalAlignment.Center },
+                _driveCheckMinutesInput, new TextBlock { Text = "분", VerticalAlignment = VerticalAlignment.Center },
+                _driveCheckSecondsInput, new TextBlock { Text = "초", VerticalAlignment = VerticalAlignment.Center }
+            }
+        };
         _openOAuthClientsButton = new Button { Content = "OAuth Client 등록", MinHeight = 38 };
         var oauthClientRow = new Grid
         {
@@ -269,7 +289,9 @@ public sealed class SettingsWindow : Window
                 Children = { _driveTitle, _driveDescription, _driveStatus, _driveClientIdLabel,
                     oauthClientRow,
                     new TextBlock { Text = "Client Secret (선택)", FontSize = 12, FontWeight = FontWeight.SemiBold },
-                    _driveClientSecretInput, driveAccountRow, driveAccountActions, _driveSyncButton }
+                    _driveClientSecretInput, driveAccountRow, driveAccountActions,
+                    new TextBlock { Text = "자동 확인 간격", FontSize = 12, FontWeight = FontWeight.SemiBold },
+                    intervalRow, _driveSyncButton }
             }
         };
         _themePicker.SelectionChanged += (_, _) =>
@@ -280,12 +302,14 @@ public sealed class SettingsWindow : Window
         };
         _driveClientIdInput.LostFocus += (_, _) => SaveGoogleOAuthClientId();
         _driveClientSecretInput.LostFocus += (_, _) => SaveGoogleOAuthClientSecret();
+        foreach (var input in new[] { _driveCheckHoursInput, _driveCheckMinutesInput, _driveCheckSecondsInput })
+            input.LostFocus += (_, _) => SaveDriveCheckInterval();
         _openOAuthClientsButton.Click += async (_, _) =>
             await Launcher.LaunchUriAsync(new Uri("https://console.cloud.google.com/auth/clients"));
         _driveConnectButton.Click += async (_, _) => await ConnectGoogleAccountAsync();
         _driveDisconnectButton.Click += (_, _) => DisconnectGoogleAccount();
         _driveSyncButton.Click += async (_, _) => await SyncSavedGoogleAccountAsync();
-        Closed += (_, _) => { SaveGoogleOAuthClientId(); SaveGoogleOAuthClientSecret(); };
+        Closed += (_, _) => { SaveGoogleOAuthClientId(); SaveGoogleOAuthClientSecret(); SaveDriveCheckInterval(); };
         var content = new StackPanel
         {
             Spacing = 18,
@@ -304,6 +328,26 @@ public sealed class SettingsWindow : Window
     private void SaveGoogleOAuthClientId() => _settingsStore.SaveGoogleOAuthClientId(_driveClientIdInput.Text ?? "");
 
     private void SaveGoogleOAuthClientSecret() => _settingsStore.SaveGoogleOAuthClientSecret(_driveClientSecretInput.Text ?? "");
+
+    private static TextBox CreateIntervalInput(int value) => new()
+    {
+        Text = value.ToString(),
+        MinHeight = 36,
+        Width = 64,
+        PlaceholderText = "0"
+    };
+
+    private void SaveDriveCheckInterval()
+    {
+        static int Read(TextBox input) => int.TryParse(input.Text, out var value) ? Math.Max(0, value) : 0;
+        var seconds = Read(_driveCheckHoursInput) * 3600L + Read(_driveCheckMinutesInput) * 60L + Read(_driveCheckSecondsInput);
+        var boundedSeconds = (int)Math.Clamp(seconds, 1, 86400);
+        _settingsStore.SaveDriveCheckIntervalSeconds(boundedSeconds);
+        _driveCheckHoursInput.Text = (boundedSeconds / 3600).ToString();
+        _driveCheckMinutesInput.Text = (boundedSeconds % 3600 / 60).ToString();
+        _driveCheckSecondsInput.Text = (boundedSeconds % 60).ToString();
+        _setDriveCheckInterval(TimeSpan.FromSeconds(boundedSeconds));
+    }
 
     private async Task ConnectGoogleAccountAsync()
     {
@@ -418,7 +462,7 @@ public sealed class SettingsWindow : Window
         _themePicker.Background = new SolidColorBrush(inputBackground);
         _themePicker.Foreground = new SolidColorBrush(primaryText);
         _themePicker.BorderBrush = new SolidColorBrush(border);
-        foreach (var input in new[] { _driveClientIdInput, _driveClientSecretInput })
+        foreach (var input in new[] { _driveClientIdInput, _driveClientSecretInput, _driveCheckHoursInput, _driveCheckMinutesInput, _driveCheckSecondsInput })
         {
             input.Background = new SolidColorBrush(inputBackground);
             input.Foreground = new SolidColorBrush(primaryText);

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Net.NetworkInformation;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -43,13 +44,18 @@ public partial class MainWindow : Window
     private readonly List<Border> _cardVisuals = [];
     private readonly HashSet<MediaCard> _dragSelectionBase = [];
     private readonly HashSet<string> _durationRefreshInProgress = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly SemaphoreSlim SoopDurationLoadLimiter = new(10);
+    private readonly HashSet<MediaCard> _durationRefreshAttempted = [];
+    private static readonly SemaphoreSlim SoopDurationLoadLimiter = new(2);
+    private static readonly HttpClient SoopDurationHttpClient = CreateSoopDurationHttpClient();
     private readonly LocalCsvDatabase _localDatabase;
     private readonly IVodRepository _vodRepository;
     private GoogleDriveSyncClient? _driveSyncClient;
     private bool _isSyncingDrive;
+    private bool _isCheckingDrive;
     private bool _driveUploadPending;
     private readonly DispatcherTimer _driveUploadTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer _driveCheckTimer = new();
+    private bool _isWindowActive;
     private static readonly SemaphoreSlim ThumbnailLoadLimiter = new(4);
     private ChannelEntry? _selectedChannel;
     private bool _isListView;
@@ -96,6 +102,7 @@ public partial class MainWindow : Window
         PlatformTabs.SelectedIndex = -1;
         UpdateNavigationSelection("all");
         ApplyTheme(_settingsStore.LoadIsDarkTheme());
+        AppLogger.Info("MainWindow", $"Loaded local library. Channels={_channels.Count}; Cards={_allCards.Count}");
         _searchDurationRefreshTimer.Tick += SearchDurationRefreshTimer_Tick;
         _channelStatusTimer.Tick += ChannelStatusTimer_Tick;
         _refreshNotificationTimer.Tick += (_, _) =>
@@ -115,20 +122,36 @@ public partial class MainWindow : Window
             ((RotateTransform)DriveSyncNotificationSpinner.RenderTransform!).Angle = _syncSpinnerAngle;
         };
         _driveUploadTimer.Tick += DriveUploadTimer_Tick;
+        _driveCheckTimer.Interval = TimeSpan.FromSeconds(_settingsStore.LoadDriveCheckIntervalSeconds());
+        _driveCheckTimer.Tick += DriveCheckTimer_Tick;
         _channelStatusTimer.Start();
         _ = RestoreGoogleDriveAndSyncAsync();
+        Activated += async (_, _) =>
+        {
+            _isWindowActive = true;
+            _driveCheckTimer.Start();
+            await CheckDriveForChangesAsync();
+        };
+        Deactivated += (_, _) =>
+        {
+            _isWindowActive = false;
+            _driveCheckTimer.Stop();
+        };
         Closed += (_, _) =>
         {
+            AppLogger.Info("MainWindow", "Window closed.");
             _channelStatusTimer.Stop();
             _searchDurationRefreshTimer.Stop();
             _refreshNotificationTimer.Stop();
             _driveSyncNotificationTimer.Stop();
             _syncSpinnerTimer.Stop();
             _driveUploadTimer.Stop();
+            _driveCheckTimer.Stop();
             foreach (var channel in _channels) channel.Dispose();
             foreach (var card in _allCards) card.Dispose();
         };
         UpdateCards();
+        RefreshUnknownVisibleCardDurations();
     }
 
     private async void ChannelStatusTimer_Tick(object? sender, EventArgs e) => await RefreshChannelStatusesAsync();
@@ -557,6 +580,7 @@ public partial class MainWindow : Window
             PageDescription.Text = "치지직과 SOOP에 등록한 영상을 모아봅니다.";
             ListTitle.Text = "다시보기 리스트";
             UpdateCards();
+            RefreshUnknownVisibleCardDurations();
             return;
         }
 
@@ -580,6 +604,7 @@ public partial class MainWindow : Window
         ClearChannelSelection();
         PlatformTabs.SelectedIndex = section == "soop" ? 1 : 0;
         UpdateCards();
+        RefreshUnknownVisibleCardDurations();
     }
 
     private void UpdateNavigationSelection(string section)
@@ -596,6 +621,7 @@ public partial class MainWindow : Window
         if (_isAllLibraryView)
         {
             UpdateCards();
+            RefreshUnknownVisibleCardDurations();
             return;
         }
         if (PlatformTabs.SelectedItem is not TabItem tab) return;
@@ -615,6 +641,7 @@ public partial class MainWindow : Window
             _ => ("전체 보관함", "치지직과 SOOP에 등록한 영상을 모아봅니다.", "다시보기 리스트")
         };
         UpdateCards();
+        RefreshUnknownVisibleCardDurations();
     }
     private void AddMenu_Click(object? sender, RoutedEventArgs e)
     {
@@ -1143,6 +1170,7 @@ public partial class MainWindow : Window
     {
         if (sender is Border border && !_cardVisuals.Contains(border))
             _cardVisuals.Add(border);
+        Dispatcher.UIThread.Post(RefreshUnknownVisibleCardDurations, DispatcherPriority.Background);
     }
 
     private void MediaCard_Unloaded(object? sender, RoutedEventArgs e)
@@ -1406,10 +1434,10 @@ public partial class MainWindow : Window
 
             card.UpdateDetails(title, publishedAt, address, filePath);
             card.SetMemo(memoInput.Text ?? "");
-            _ = RefreshCardDurationAsync(card);
             if (card.ChannelUrl is not null && _channels.FirstOrDefault(item => item.ChannelUrl == card.ChannelUrl) is { } channel)
                 SaveChannel(channel);
             UpdateCards();
+            Dispatcher.UIThread.Post(RefreshUnknownVisibleCardDurations, DispatcherPriority.Background);
             dialog.Close();
         };
 
@@ -1871,7 +1899,7 @@ public partial class MainWindow : Window
         var localPath = card.LocalFilePath;
         if (card.PlatformLabel == "SOOP" && !string.IsNullOrWhiteSpace(onlineUrl))
         {
-            var duration = await FetchSoopVodDurationAsync(onlineUrl);
+            var duration = await FetchSoopVodDurationAsync(onlineUrl, card.SetDurationDiagnostic);
             if (duration is > 0 && string.Equals(card.OnlineUrl, onlineUrl, StringComparison.OrdinalIgnoreCase))
             {
                 card.SetDuration(duration);
@@ -1911,7 +1939,7 @@ public partial class MainWindow : Window
     {
         var onlineUrl = card.OnlineUrl;
         double? duration = card.PlatformLabel == "SOOP"
-            ? await FetchSoopVodDurationAsync(onlineUrl)
+            ? await FetchSoopVodDurationAsync(onlineUrl, card.SetDurationDiagnostic)
             : null;
         if (duration is null && card.PlatformLabel != "SOOP")
         {
@@ -1927,7 +1955,12 @@ public partial class MainWindow : Window
     }
 
     private Task RefreshChannelDurationsAsync(ChannelEntry channel)
-        => RefreshChannelDurationsAsync(channel, null);
+    {
+        var cards = GetViewportVisibleCards()
+            .Where(card => card.ChannelUrl == channel.ChannelUrl && !card.HasKnownDuration && _durationRefreshAttempted.Add(card))
+            .ToArray();
+        return RefreshChannelDurationsAsync(channel, cards);
+    }
 
     private async Task RefreshChannelDurationsAsync(ChannelEntry channel, IReadOnlyCollection<MediaCard>? cardsToRefresh)
     {
@@ -1937,15 +1970,44 @@ public partial class MainWindow : Window
             var channelCards = (cardsToRefresh?.ToArray() ?? _visibleCards.Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray())
                 .Where(card => !card.HasKnownDuration)
                 .ToArray();
+            AppLogger.Info("Duration", $"Starting channel duration refresh. Platform={channel.Platform}; ChannelId={channel.ChannelId}; Cards={channelCards.Length}; PlatformLabels={string.Join(',', channelCards.Select(card => card.PlatformLabel).Distinct())}");
             if (channel.Platform == "SOOP")
             {
-                await Task.WhenAll(channelCards.Select(async card =>
+                var videos = new List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl, double? DurationSeconds)>();
+                try
                 {
-                    var duration = await FetchSoopVodDurationAsync(card.OnlineUrl);
-                    if (duration is > 0)
-                        card.SetDuration(duration);
-                    else if (card.HasLocalFilePath)
+                    // One channel-list request can provide durations for multiple visible cards.
+                    videos.AddRange(await FetchChannelVideosAsync(channel));
+                    AppLogger.Info("SoopDuration", $"ChannelId={channel.ChannelId}; list records={videos.Count}; list durations={videos.Count(video => video.DurationSeconds is > 0)}");
+                }
+                catch (Exception exception)
+                {
+                    AppLogger.Warn("SoopDuration", $"ChannelId={channel.ChannelId}; channel-list duration lookup failed: {exception.GetType().Name}: {exception.Message}");
+                }
+
+                foreach (var card in channelCards)
+                {
+                    var match = videos.FirstOrDefault(video => string.Equals(video.Url.TrimEnd('/'),
+                        card.OnlineUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+                    if (match.DurationSeconds is > 0)
+                    {
+                        card.SetDuration(match.DurationSeconds);
+                        continue;
+                    }
+                    if (card.HasLocalFilePath)
+                    {
                         await DetectLocalDurationAsync(card);
+                        if (card.HasKnownDuration) continue;
+                    }
+                    card.SetDurationDiagnostic("\uB300\uAE30 \uC911");
+                }
+
+                var cardsStillUnknown = channelCards.Where(card => !card.HasKnownDuration).ToArray();
+                await Task.WhenAll(cardsStillUnknown.Select(async card =>
+                {
+                    var duration = await FetchSoopVodDurationAsync(card.OnlineUrl, card.SetDurationDiagnostic);
+                    if (duration is > 0) card.SetDuration(duration);
+                    else if (card.HasLocalFilePath) await DetectLocalDurationAsync(card);
                 }));
             }
             else
@@ -1961,53 +2023,132 @@ public partial class MainWindow : Window
                 }));
             }
             SaveChannel(channel);
+            AppLogger.Info("Duration", $"Finished channel duration refresh. Platform={channel.Platform}; ChannelId={channel.ChannelId}; Known={channelCards.Count(card => card.HasKnownDuration)}/{channelCards.Length}");
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+        catch (Exception exception)
         {
+            AppLogger.Error("Duration", $"Channel duration refresh failed. Platform={channel.Platform}; ChannelId={channel.ChannelId}", exception);
             foreach (var card in _allCards.Where(card => card.ChannelUrl == channel.ChannelUrl && card.HasLocalFilePath))
                 _ = DetectLocalDurationAsync(card);
         }
         finally
         {
             _durationRefreshInProgress.Remove(channel.ChannelUrl);
+            var refreshedCards = cardsToRefresh?.ToHashSet() ?? [];
+            foreach (var card in GetViewportVisibleCards().Where(card =>
+                         card.ChannelUrl == channel.ChannelUrl && !card.HasKnownDuration && !refreshedCards.Contains(card)))
+                _durationRefreshAttempted.Remove(card);
+            Dispatcher.UIThread.Post(RefreshUnknownVisibleCardDurations, DispatcherPriority.Background);
         }
     }
 
-    private static async Task<double?> FetchSoopVodDurationAsync(string? vodUrl)
+    private static HttpClient CreateSoopDurationHttpClient()
     {
-        if (!Uri.TryCreate(vodUrl, UriKind.Absolute, out var uri)) return null;
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Origin", "https://vod.sooplive.com");
+        return client;
+    }
+
+    private static async Task<double?> FetchSoopVodDurationAsync(string? vodUrl, Action<string>? reportDiagnostic = null)
+    {
+        if (!Uri.TryCreate(vodUrl, UriKind.Absolute, out var uri))
+        {
+            reportDiagnostic?.Invoke("\uC8FC\uC18C \uC624\uB958");
+            AppLogger.Warn("SoopDuration", $"Skipped invalid VOD URL: {vodUrl ?? "<null>"}");
+            return null;
+        }
         var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
         var playerIndex = Array.FindIndex(segments, segment => segment.Equals("player", StringComparison.OrdinalIgnoreCase));
-        if (playerIndex < 0 || playerIndex + 1 >= segments.Length || !long.TryParse(segments[playerIndex + 1], out _)) return null;
+        var vodId = playerIndex >= 0 && playerIndex + 1 < segments.Length &&
+                    long.TryParse(segments[playerIndex + 1], out _)
+            ? segments[playerIndex + 1]
+            : segments.LastOrDefault(segment => long.TryParse(segment, out _));
+        if (vodId is null)
+        {
+            reportDiagnostic?.Invoke("\uC8FC\uC18C \uC624\uB958");
+            AppLogger.Warn("SoopDuration", $"Could not extract numeric VOD ID. Path={uri.AbsolutePath}");
+            return null;
+        }
 
+        reportDiagnostic?.Invoke("\uB300\uAE30 \uC911");
+        AppLogger.Info("SoopDuration", $"VOD={vodId}; queued for duration request.");
         await SoopDurationLoadLimiter.WaitAsync();
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
-            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.m.sooplive.com/station/video/a/view")
+            foreach (var apiLevel in new[] { "10", "11" })
             {
-                Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                reportDiagnostic?.Invoke("\uC870\uD68C \uC911");
+                AppLogger.Info("SoopDuration", $"VOD={vodId}; sending request; ApiLevel={apiLevel}.");
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.m.sooplive.com/station/video/a/view")
                 {
-                    ["nTitleNo"] = segments[playerIndex + 1],
-                    ["nApiLevel"] = "10"
-                })
-            };
-            request.Headers.Referrer = uri;
-            using var response = await client.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-            using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-            if (!json.RootElement.TryGetProperty("data", out var data)) return null;
-            if (TryGetMilliseconds(data, "total_file_duration", out var milliseconds)) return milliseconds / 1000d;
-            if (data.TryGetProperty("files", out var files) && files.ValueKind == System.Text.Json.JsonValueKind.Array)
-            {
-                var totalMilliseconds = files.EnumerateArray().Sum(file => TryGetMilliseconds(file, "duration", out var durationMs) ? durationMs : 0);
-                if (totalMilliseconds > 0) return totalMilliseconds / 1000d;
+                    Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                    {
+                        ["nTitleNo"] = vodId,
+                        ["nApiLevel"] = apiLevel,
+                        ["nPlaylistIdx"] = "0"
+                    })
+                };
+                request.Headers.Referrer = uri;
+                HttpResponseMessage response;
+                try
+                {
+                    response = await SoopDurationHttpClient.SendAsync(request);
+                }
+                catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+                {
+                    AppLogger.Warn("SoopDuration", $"VOD={vodId}; ApiLevel={apiLevel}; request failed: {exception.GetType().Name}: {exception.Message}");
+                    if (apiLevel == "11") throw;
+                    continue;
+                }
+                using (response)
+                {
+                if (!response.IsSuccessStatusCode)
+                {
+                    reportDiagnostic?.Invoke($"HTTP {(int)response.StatusCode}");
+                    AppLogger.Warn("SoopDuration", $"VOD={vodId}; ApiLevel={apiLevel}; HTTP={(int)response.StatusCode} {response.ReasonPhrase}");
+                    continue;
+                }
+                using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                if (!json.RootElement.TryGetProperty("data", out var data))
+                {
+                    reportDiagnostic?.Invoke("\uC751\uB2F5 \uC624\uB958");
+                    AppLogger.Warn("SoopDuration", $"VOD={vodId}; ApiLevel={apiLevel}; response has no data field. RootFields={GetJsonPropertyNames(json.RootElement)}");
+                    continue;
+                }
+                if (TryGetMilliseconds(data, "total_file_duration", out var milliseconds))
+                {
+                    var seconds = milliseconds / 1000d;
+                    reportDiagnostic?.Invoke("\uC870\uD68C \uC911");
+                    AppLogger.Info("SoopDuration", $"VOD={vodId}; ApiLevel={apiLevel}; Source=total_file_duration; Milliseconds={milliseconds}; Seconds={seconds}");
+                    return seconds;
+                }
+                if (data.TryGetProperty("files", out var files) && files.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    var totalMilliseconds = files.EnumerateArray().Sum(file => TryGetMilliseconds(file, "duration", out var durationMs) ? durationMs : 0);
+                    if (totalMilliseconds > 0)
+                    {
+                        var seconds = totalMilliseconds / 1000d;
+                        reportDiagnostic?.Invoke("\uC870\uD68C \uC911");
+                        AppLogger.Info("SoopDuration", $"VOD={vodId}; ApiLevel={apiLevel}; Source=files[].duration; Files={files.GetArrayLength()}; Milliseconds={totalMilliseconds}; Seconds={seconds}");
+                        return seconds;
+                    }
+                }
+                reportDiagnostic?.Invoke("\uAE38\uC774 \uC5C6\uC74C");
+                AppLogger.Warn("SoopDuration", $"VOD={vodId}; ApiLevel={apiLevel}; Result={GetJsonValue(json.RootElement, "result")}; Code={GetJsonValue(data, "code")}; TotalFileDuration={GetJsonValue(data, "total_file_duration")}; DataFields={GetJsonPropertyNames(data)}; Files={GetJsonArrayLength(data, "files")}");
+                }
             }
+            reportDiagnostic?.Invoke("\uAE38\uC774 \uC5C6\uC74C");
+            AppLogger.Warn("SoopDuration", $"VOD={vodId}; no duration found after trying API levels 10 and 11.");
             return null;
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+        catch (Exception exception)
         {
+            reportDiagnostic?.Invoke(exception is TaskCanceledException
+                ? "\uC870\uD68C \uC2E4\uD328 (\uC751\uB2F5 \uC2DC\uAC04 \uCD08\uACFC)"
+                : "\uC870\uD68C \uC624\uB958");
+            AppLogger.Error("SoopDuration", $"VOD={vodId}; API request failed.", exception);
             return null;
         }
         finally
@@ -2015,6 +2156,25 @@ public partial class MainWindow : Window
             SoopDurationLoadLimiter.Release();
         }
     }
+
+    private static string GetJsonPropertyNames(System.Text.Json.JsonElement element) =>
+        element.ValueKind == System.Text.Json.JsonValueKind.Object
+            ? string.Join(',', element.EnumerateObject().Select(property => property.Name))
+            : element.ValueKind.ToString();
+
+    private static string GetJsonValue(System.Text.Json.JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value) ? value.ToString() : "missing";
+
+    private static string FormatDurationForDiagnostic(double seconds)
+    {
+        var duration = TimeSpan.FromSeconds(seconds);
+        return $"{(int)duration.TotalHours:00}:{duration.Minutes:00}:{duration.Seconds:00}";
+    }
+
+    private static string GetJsonArrayLength(System.Text.Json.JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Array
+            ? value.GetArrayLength().ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "missing";
 
     private static bool TryGetMilliseconds(System.Text.Json.JsonElement element, string propertyName, out double milliseconds)
     {
@@ -2167,10 +2327,7 @@ public partial class MainWindow : Window
                     string.Equals(card.OnlineUrl?.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
                 if (existingCard is not null)
                 {
-                    if (existingCard.PlatformLabel == "SOOP")
-                        _ = RefreshCardDurationAsync(existingCard);
-                    else
-                        existingCard.SetDuration(video.DurationSeconds);
+                    if (video.DurationSeconds is > 0) existingCard.SetDuration(video.DurationSeconds);
                     _ = RefreshCardThumbnailAsync(existingCard, video.ThumbnailUrl);
                     if (!existingCard.HasKnownDuration && existingCard.HasLocalFilePath)
                         _ = DetectLocalDurationAsync(existingCard);
@@ -2181,8 +2338,6 @@ public partial class MainWindow : Window
                     durationSeconds: video.DurationSeconds);
                 _allCards.Add(card);
                 addedCards.Add(card);
-                if (card.PlatformLabel == "SOOP" && !card.HasKnownDuration)
-                    _ = RefreshCardDurationAsync(card);
                 _ = RefreshCardThumbnailAsync(card, video.ThumbnailUrl);
                 addedCount++;
             }
@@ -2191,6 +2346,7 @@ public partial class MainWindow : Window
                 _ = DetectLocalDurationAsync(card);
             SaveChannel(channel);
             UpdateCards();
+            Dispatcher.UIThread.Post(RefreshUnknownVisibleCardDurations, DispatcherPriority.Background);
             ShowRefreshNotification(addedCount == 0 ? "새로고침 할 내용 없음" : $"새로고침 완료 · 새 영상 {addedCount}개 추가");
         }
         catch (Exception)
@@ -2246,19 +2402,16 @@ public partial class MainWindow : Window
 
     private async void CardsScroller_ScrollChanged(object? sender, ScrollChangedEventArgs e)
     {
-        if (sender is not ScrollViewer scroller || _isLoadingMoreAtScrollEnd) return;
+        if (sender is not ScrollViewer scroller) return;
+        RefreshUnknownVisibleCardDurations();
+        if (_isLoadingMoreAtScrollEnd) return;
         var remaining = scroller.Extent.Height - scroller.Offset.Y - scroller.Viewport.Height;
         if (remaining > 160) return;
         if (_visibleCards.Count < _filteredCards.Count)
         {
             _cardDisplayLimit += CardDisplayBatchSize;
             UpdateCards();
-            foreach (var group in _visibleCards.Where(card => !card.HasKnownDuration && !string.IsNullOrWhiteSpace(card.ChannelUrl))
-                         .GroupBy(card => card.ChannelUrl!))
-            {
-                if (_channels.FirstOrDefault(channel => channel.ChannelUrl == group.Key) is { } owner)
-                    _ = RefreshChannelDurationsAsync(owner, group.ToArray());
-            }
+            Dispatcher.UIThread.Post(RefreshUnknownVisibleCardDurations, DispatcherPriority.Background);
             return;
         }
         var channel = _selectedChannel;
@@ -2276,13 +2429,14 @@ public partial class MainWindow : Window
                     "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl,
                     durationSeconds: video.DurationSeconds);
                 _allCards.Add(card);
-                if (!card.HasKnownDuration) _ = RefreshCardDurationAsync(card);
+                // Duration lookup is queued only after the new card enters the viewport.
                 _ = RefreshCardThumbnailAsync(card, video.ThumbnailUrl);
             }
             _soopNextPageByChannel[channel.ChannelUrl] = page + 1;
             if (videos.Count < 60) _soopHasMoreByChannel.Remove(channel.ChannelUrl);
             SaveChannel(channel);
             UpdateCards();
+            Dispatcher.UIThread.Post(RefreshUnknownVisibleCardDurations, DispatcherPriority.Background);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
         {
@@ -2319,8 +2473,11 @@ public partial class MainWindow : Window
                 if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(title) || !seenVodIds.Add(id)) continue;
                 var dateValue = item.TryGetProperty("reg_date", out var regDate) ? regDate.ToString() : null;
                 var thumbnailUrl = GetFirstString(item, "thumb", "thumbnail", "thumb_url", "thumbnail_url", "title_img", "title_thumbnail");
+                var durationSeconds = GetDurationSeconds(item, "total_file_duration");
+                if (durationSeconds is > 0) durationSeconds /= 1000d;
+                durationSeconds ??= GetDurationSeconds(item, "file_duration", "duration");
                 videos.Add((title, $"https://vod.sooplive.com/player/{Uri.EscapeDataString(id)}", ParsePublishedDate(dateValue), thumbnailUrl,
-                    GetDurationSeconds(item, "total_file_duration", "file_duration", "duration")));
+                    durationSeconds));
             }
             return videos;
         }
@@ -2855,6 +3012,46 @@ public partial class MainWindow : Window
         _ => false
     };
 
+    private async void DriveCheckTimer_Tick(object? sender, EventArgs e) => await CheckDriveForChangesAsync();
+
+    private async Task CheckDriveForChangesAsync()
+    {
+        if (!_isWindowActive || _isSyncingDrive || _isCheckingDrive || _driveSyncClient is null) return;
+        if (!NetworkInterface.GetIsNetworkAvailable())
+        {
+            ShowDriveSyncNotification("Google Drive 변경 확인 건너뜀 (오프라인)");
+            return;
+        }
+
+        _isCheckingDrive = true;
+        ShowGoogleDriveSyncProgress();
+        DriveSyncNotificationText.Text = "Google Drive 변경 확인 중...";
+        try
+        {
+            if (!await _driveSyncClient.HasRemoteChangesAsync())
+            {
+                ShowDriveSyncNotification("Google Drive 변경 확인 완료 (변경 없음)");
+                return;
+            }
+            var credentials = OperatingSystem.IsWindows() ? WindowsCredentialVault.ReadGoogleDrive() : null;
+            if (credentials is null)
+            {
+                ShowDriveSyncNotification("Google Drive 변경 확인 완료 (계정 연결 필요)", isError: true);
+                return;
+            }
+            await SyncGoogleDriveLibraryAsync(credentials);
+        }
+        catch (Exception exception)
+        {
+            Debug.WriteLine($"Google Drive change check failed: {exception.Message}");
+            ShowDriveSyncNotification($"Google Drive sync failed: {exception.Message}", isError: true);
+        }
+        finally
+        {
+            _isCheckingDrive = false;
+        }
+    }
+
     private static string? ReadFirstString(System.Text.Json.JsonElement element, params string[] propertyNames)
     {
         foreach (var propertyName in propertyNames)
@@ -2932,8 +3129,14 @@ public partial class MainWindow : Window
     private async void OpenSettings_Click(object? sender, RoutedEventArgs e)
     {
         if (!OperatingSystem.IsWindows()) return;
-        var settings = new SettingsWindow(_isDarkTheme, ApplyTheme, _settingsStore, SyncGoogleDriveLibraryAsync);
+        var settings = new SettingsWindow(_isDarkTheme, ApplyTheme, _settingsStore, SyncGoogleDriveLibraryAsync, SetDriveCheckInterval);
         await settings.ShowDialog(this);
+    }
+
+    private void SetDriveCheckInterval(TimeSpan interval)
+    {
+        _driveCheckTimer.Interval = interval;
+        if (_isWindowActive) _driveCheckTimer.Start();
     }
 
     private async void ExportCsv_Click(object? sender, RoutedEventArgs e)
@@ -3074,7 +3277,11 @@ public partial class MainWindow : Window
         RestartVisibleCardDurations();
     }
 
-    private void StatusFilter_SelectionChanged(object? sender, SelectionChangedEventArgs e) => UpdateCards();
+    private void StatusFilter_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        UpdateCards();
+        RefreshUnknownVisibleCardDurations();
+    }
 
     private void SortOrder_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
@@ -3107,26 +3314,47 @@ public partial class MainWindow : Window
 
     private void RestartVisibleCardDurations()
     {
-        var cards = _visibleCards.ToArray();
-        if (cards.Length == 0) return;
-        foreach (var card in cards) card.SetDuration(null);
+        RefreshUnknownVisibleCardDurations();
+    }
 
-        foreach (var group in cards.Where(card => !string.IsNullOrWhiteSpace(card.ChannelUrl)).GroupBy(card => card.ChannelUrl!))
+    private void RefreshUnknownVisibleCardDurations()
+    {
+        var cards = GetViewportVisibleCards()
+            .Where(card => !card.HasKnownDuration && _durationRefreshAttempted.Add(card))
+            .ToArray();
+        foreach (var card in cards.Where(card => !string.IsNullOrWhiteSpace(card.ChannelUrl)))
+            card.SetDurationDiagnostic("\uB300\uAE30 \uC911");
+        foreach (var group in cards.Where(card => !string.IsNullOrWhiteSpace(card.ChannelUrl))
+                     .GroupBy(card => card.ChannelUrl!, StringComparer.OrdinalIgnoreCase))
         {
-            var channel = _channels.FirstOrDefault(item => item.ChannelUrl == group.Key);
-            if (channel is null)
-            {
-                foreach (var card in group) _ = RefreshCardDurationAsync(card);
-                continue;
-            }
-            _ = RefreshChannelDurationsAsync(channel, group.ToArray());
+            var channel = _channels.FirstOrDefault(item => item.ChannelUrl.Equals(group.Key, StringComparison.OrdinalIgnoreCase));
+            if (channel is not null) _ = RefreshChannelDurationsAsync(channel, group.ToArray());
+            else foreach (var card in group) _ = RefreshCardDurationAsync(card);
         }
-
         foreach (var card in cards.Where(card => string.IsNullOrWhiteSpace(card.ChannelUrl)))
         {
             if (card.HasLocalFilePath) _ = DetectLocalDurationAsync(card);
             else _ = RefreshCardDurationAsync(card);
         }
+    }
+
+    private MediaCard[] GetViewportVisibleCards()
+    {
+        var scroller = _isListView ? CardsListScroller : CardsScroller;
+        if (scroller is null || scroller.Viewport.Width <= 0 || scroller.Viewport.Height <= 0) return [];
+        var viewportOrigin = scroller.TranslatePoint(new Point(0, 0), CardsArea);
+        if (viewportOrigin is not { } origin) return [];
+        var viewport = new Rect(origin, scroller.Viewport);
+        var expectedTag = _isListView ? "list" : "grid";
+        return _cardVisuals
+            .Where(border => border.Tag?.ToString() == expectedTag &&
+                             border.DataContext is MediaCard card && _visibleCards.Contains(card))
+            .Select(border => (Border: border, Card: (MediaCard)border.DataContext!))
+            .Where(item => item.Border.TranslatePoint(new Point(0, 0), CardsArea) is { } position &&
+                           new Rect(position, item.Border.Bounds.Size).Intersects(viewport))
+            .Select(item => item.Card)
+            .Distinct()
+            .ToArray();
     }
 
     private void UpdateSortDirectionButton()
@@ -3275,6 +3503,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     private string _vodId;
     private double _lastPositionSeconds;
     private double? _durationSeconds;
+    private string _durationDiagnostic = "";
     private bool _isPositionSliderInteracting;
     private bool _positionSliderHasPendingChanges;
     private bool _isPlaybackProgressHovered;
@@ -3328,7 +3557,10 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public double LastPositionSeconds => _lastPositionSeconds;
     public double? DurationSeconds => _durationSeconds;
     public bool HasKnownDuration => _durationSeconds is > 0;
-    public string DurationLabel => _durationSeconds is > 0 ? FormatDuration(_durationSeconds.Value) : "알 수 없음";
+    public string DurationLabel => _durationSeconds is > 0
+        ? FormatDuration(_durationSeconds.Value)
+        : string.IsNullOrWhiteSpace(_durationDiagnostic) ? "\uC54C \uC218 \uC5C6\uC74C" : _durationDiagnostic;
+    public string DurationTooltip => "\uC601\uC0C1 \uC2DC\uAC04";
     public double SliderMaximumSeconds => _durationSeconds is > 0 ? _durationSeconds.Value : 1;
     public double PlaybackPositionSliderValue
     {
@@ -3505,13 +3737,24 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public string PublishedAtLabel => PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd") ?? "";
     public void SetDuration(double? seconds)
     {
+        if (seconds is not > 0 && !string.IsNullOrWhiteSpace(_durationDiagnostic))
+            AppLogger.Warn("DurationStatus", $"VOD={VodId}; diagnostic cleared by SetDuration(null). Previous={_durationDiagnostic}");
         _durationSeconds = seconds > 0 ? seconds : null;
+        _durationDiagnostic = "";
         OnPropertyChanged(nameof(DurationSeconds));
         OnPropertyChanged(nameof(HasKnownDuration));
         OnPropertyChanged(nameof(DurationLabel));
         OnPropertyChanged(nameof(SliderMaximumSeconds));
         OnPropertyChanged(nameof(PlaybackProgressRatio));
         OnPropertyChanged(nameof(IsPositionSliderVisible));
+    }
+
+    public void SetDurationDiagnostic(string diagnostic)
+    {
+        if (string.Equals(_durationDiagnostic, diagnostic, StringComparison.Ordinal)) return;
+        AppLogger.Info("DurationStatus", $"VOD={VodId}; { _durationDiagnostic} -> {diagnostic}");
+        _durationDiagnostic = diagnostic;
+        OnPropertyChanged(nameof(DurationLabel));
     }
 
     public void SetPlaybackProgressHovered(bool isHovered)
