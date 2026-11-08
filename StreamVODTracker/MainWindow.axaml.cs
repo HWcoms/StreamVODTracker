@@ -45,7 +45,8 @@ public partial class MainWindow : Window
     private readonly HashSet<MediaCard> _dragSelectionBase = [];
     private readonly HashSet<string> _durationRefreshInProgress = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<MediaCard> _durationRefreshAttempted = [];
-    private static readonly SemaphoreSlim SoopDurationLoadLimiter = new(2);
+    private readonly Dictionary<string, CancellationTokenSource> _durationRefreshCancellation = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly SemaphoreSlim SoopDurationLoadLimiter = new(4);
     private static readonly HttpClient SoopDurationHttpClient = CreateSoopDurationHttpClient();
     private readonly LocalCsvDatabase _localDatabase;
     private readonly IVodRepository _vodRepository;
@@ -130,6 +131,7 @@ public partial class MainWindow : Window
         {
             _isWindowActive = true;
             _driveCheckTimer.Start();
+            RefreshUnknownVisibleCardDurations();
             await CheckDriveForChangesAsync();
         };
         Deactivated += (_, _) =>
@@ -1911,18 +1913,16 @@ public partial class MainWindow : Window
                 await DetectLocalDurationAsync(card);
             return;
         }
-        if (!string.IsNullOrWhiteSpace(onlineUrl) && IsHttpUrl(onlineUrl) && card.ChannelUrl is not null &&
-            _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+        if (!string.IsNullOrWhiteSpace(onlineUrl) && IsHttpUrl(onlineUrl))
         {
             try
             {
-                var videos = await FetchChannelVideosAsync(channel);
-                var match = videos.FirstOrDefault(video => string.Equals(video.Url.TrimEnd('/'), onlineUrl!.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
-                var duration = match.DurationSeconds;
+                var duration = await FetchChzzkVodDurationAsync(onlineUrl, card.SetDurationDiagnostic);
                 if (duration is > 0 && string.Equals(card.OnlineUrl, onlineUrl, StringComparison.OrdinalIgnoreCase))
                 {
                     card.SetDuration(duration);
-                    SaveChannel(channel);
+                    if (card.ChannelUrl is not null && _channels.FirstOrDefault(item => item.ChannelUrl == card.ChannelUrl) is { } owner)
+                        SaveChannel(owner);
                     return;
                 }
             }
@@ -1965,65 +1965,45 @@ public partial class MainWindow : Window
     private async Task RefreshChannelDurationsAsync(ChannelEntry channel, IReadOnlyCollection<MediaCard>? cardsToRefresh)
     {
         if (!_durationRefreshInProgress.Add(channel.ChannelUrl)) return;
+        var cancellation = new CancellationTokenSource();
+        _durationRefreshCancellation[channel.ChannelUrl] = cancellation;
+        var cancellationToken = cancellation.Token;
         try
         {
-            var channelCards = (cardsToRefresh?.ToArray() ?? _visibleCards.Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray())
+            var channelCards = (cardsToRefresh?.ToArray() ?? GetViewportVisibleCards().Where(card => card.ChannelUrl == channel.ChannelUrl).ToArray())
                 .Where(card => !card.HasKnownDuration)
                 .ToArray();
             AppLogger.Info("Duration", $"Starting channel duration refresh. Platform={channel.Platform}; ChannelId={channel.ChannelId}; Cards={channelCards.Length}; PlatformLabels={string.Join(',', channelCards.Select(card => card.PlatformLabel).Distinct())}");
             if (channel.Platform == "SOOP")
             {
-                var videos = new List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl, double? DurationSeconds)>();
-                try
+                await Task.WhenAll(channelCards.Select(async card =>
                 {
-                    // One channel-list request can provide durations for multiple visible cards.
-                    videos.AddRange(await FetchChannelVideosAsync(channel));
-                    AppLogger.Info("SoopDuration", $"ChannelId={channel.ChannelId}; list records={videos.Count}; list durations={videos.Count(video => video.DurationSeconds is > 0)}");
-                }
-                catch (Exception exception)
-                {
-                    AppLogger.Warn("SoopDuration", $"ChannelId={channel.ChannelId}; channel-list duration lookup failed: {exception.GetType().Name}: {exception.Message}");
-                }
-
-                foreach (var card in channelCards)
-                {
-                    var match = videos.FirstOrDefault(video => string.Equals(video.Url.TrimEnd('/'),
-                        card.OnlineUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
-                    if (match.DurationSeconds is > 0)
-                    {
-                        card.SetDuration(match.DurationSeconds);
-                        continue;
-                    }
-                    if (card.HasLocalFilePath)
-                    {
-                        await DetectLocalDurationAsync(card);
-                        if (card.HasKnownDuration) continue;
-                    }
-                    card.SetDurationDiagnostic("\uB300\uAE30 \uC911");
-                }
-
-                var cardsStillUnknown = channelCards.Where(card => !card.HasKnownDuration).ToArray();
-                await Task.WhenAll(cardsStillUnknown.Select(async card =>
-                {
-                    var duration = await FetchSoopVodDurationAsync(card.OnlineUrl, card.SetDurationDiagnostic);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var duration = await FetchSoopVodDurationAsync(card.OnlineUrl, card.SetDurationDiagnostic, cancellationToken);
                     if (duration is > 0) card.SetDuration(duration);
                     else if (card.HasLocalFilePath) await DetectLocalDurationAsync(card);
                 }));
             }
             else
             {
-                var videos = await FetchChannelVideosAsync(channel);
                 await Task.WhenAll(channelCards.Select(async card =>
                 {
-                    var match = videos.FirstOrDefault(video => string.Equals(video.Url.TrimEnd('/'), card.OnlineUrl?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
-                    if (match.DurationSeconds is > 0)
-                        card.SetDuration(match.DurationSeconds);
-                    else if (card.HasLocalFilePath)
-                        await DetectLocalDurationAsync(card);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var duration = await FetchChzzkVodDurationAsync(card.OnlineUrl, card.SetDurationDiagnostic, cancellationToken);
+                    if (duration is > 0) card.SetDuration(duration);
+                    else if (card.HasLocalFilePath) await DetectLocalDurationAsync(card);
                 }));
             }
             SaveChannel(channel);
             AppLogger.Info("Duration", $"Finished channel duration refresh. Platform={channel.Platform}; ChannelId={channel.ChannelId}; Known={channelCards.Count(card => card.HasKnownDuration)}/{channelCards.Length}");
+        }
+        catch (OperationCanceledException)
+        {
+            foreach (var card in cardsToRefresh ?? [])
+            {
+                if (!card.HasKnownDuration)
+                    _durationRefreshAttempted.Remove(card);
+            }
         }
         catch (Exception exception)
         {
@@ -2033,6 +2013,9 @@ public partial class MainWindow : Window
         }
         finally
         {
+            if (_durationRefreshCancellation.TryGetValue(channel.ChannelUrl, out var active) && ReferenceEquals(active, cancellation))
+                _durationRefreshCancellation.Remove(channel.ChannelUrl);
+            cancellation.Dispose();
             _durationRefreshInProgress.Remove(channel.ChannelUrl);
             var refreshedCards = cardsToRefresh?.ToHashSet() ?? [];
             foreach (var card in GetViewportVisibleCards().Where(card =>
@@ -2051,7 +2034,42 @@ public partial class MainWindow : Window
         return client;
     }
 
-    private static async Task<double?> FetchSoopVodDurationAsync(string? vodUrl, Action<string>? reportDiagnostic = null)
+    private static async Task<double?> FetchChzzkVodDurationAsync(string? vodUrl, Action<string>? reportDiagnostic = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Uri.TryCreate(vodUrl, UriKind.Absolute, out var uri)) return null;
+        var videoId = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+        if (string.IsNullOrWhiteSpace(videoId)) return null;
+
+        reportDiagnostic?.Invoke("\uC870\uD68C \uC911");
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+            using var response = await client.GetAsync($"https://api.chzzk.naver.com/service/v2/videos/{Uri.EscapeDataString(videoId)}", cancellationToken);
+            response.EnsureSuccessStatusCode();
+            using var json = System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            if (json.RootElement.TryGetProperty("content", out var content))
+            {
+                var seconds = GetDurationSeconds(content, "duration", "videoDuration");
+                if (seconds is > 0) return seconds;
+            }
+            reportDiagnostic?.Invoke("\uAE38\uC774 \uC5C6\uC74C");
+            return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            reportDiagnostic?.Invoke("\uC870\uD68C \uC624\uB958");
+            AppLogger.Warn("Duration", $"CHZZK VOD={videoId}; direct duration lookup failed: {exception.GetType().Name}: {exception.Message}");
+            return null;
+        }
+    }
+
+    private static async Task<double?> FetchSoopVodDurationAsync(string? vodUrl, Action<string>? reportDiagnostic = null, CancellationToken cancellationToken = default)
     {
         if (!Uri.TryCreate(vodUrl, UriKind.Absolute, out var uri))
         {
@@ -2074,7 +2092,7 @@ public partial class MainWindow : Window
 
         reportDiagnostic?.Invoke("\uB300\uAE30 \uC911");
         AppLogger.Info("SoopDuration", $"VOD={vodId}; queued for duration request.");
-        await SoopDurationLoadLimiter.WaitAsync();
+        await SoopDurationLoadLimiter.WaitAsync(cancellationToken);
         try
         {
             foreach (var apiLevel in new[] { "10", "11" })
@@ -2094,7 +2112,7 @@ public partial class MainWindow : Window
                 HttpResponseMessage response;
                 try
                 {
-                    response = await SoopDurationHttpClient.SendAsync(request);
+                    response = await SoopDurationHttpClient.SendAsync(request, cancellationToken);
                 }
                 catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
                 {
@@ -2142,6 +2160,10 @@ public partial class MainWindow : Window
             reportDiagnostic?.Invoke("\uAE38\uC774 \uC5C6\uC74C");
             AppLogger.Warn("SoopDuration", $"VOD={vodId}; no duration found after trying API levels 10 and 11.");
             return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception exception)
         {
@@ -2448,7 +2470,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private static async Task<List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl, double? DurationSeconds)>> FetchChannelVideosAsync(ChannelEntry channel, int soopPage = 1)
+    private static async Task<List<(string Title, string Url, DateTimeOffset? PublishedAt, string? ThumbnailUrl, double? DurationSeconds)>> FetchChannelVideosAsync(ChannelEntry channel, int soopPage = 1, CancellationToken cancellationToken = default)
     {
         if (!Uri.TryCreate(channel.ChannelUrl, UriKind.Absolute, out var channelUri) ||
             !TryGetPlatformChannelId(channel.Platform == "SOOP" ? "SOOP" : "CHZZK", channelUri, out var channelId))
@@ -2463,7 +2485,7 @@ public partial class MainWindow : Window
             var seenVodIds = new HashSet<string>(StringComparer.Ordinal);
             var page = Math.Max(1, soopPage);
             var url = $"https://chapi.sooplive.com/api/{Uri.EscapeDataString(channelId)}/vods/all/streamer?page={page}&per_page={pageSize}&orderby=reg_date";
-            using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url));
+            using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url, cancellationToken));
             if (!json.RootElement.TryGetProperty("data", out var data) || data.ValueKind != System.Text.Json.JsonValueKind.Array)
                 throw new InvalidOperationException("The SOOP VOD response did not contain a valid data list.");
             foreach (var item in data.EnumerateArray())
@@ -2485,7 +2507,7 @@ public partial class MainWindow : Window
         for (var page = 0; page < 5; page++)
         {
             var url = $"https://api.chzzk.naver.com/service/v1/channels/{Uri.EscapeDataString(channelId)}/videos?sortType=LATEST&pagingType=PAGE&page={page}&size=30";
-            using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url));
+            using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync(url, cancellationToken));
             if (!json.RootElement.TryGetProperty("content", out var content) ||
                 !content.TryGetProperty("data", out var data) || data.ValueKind != System.Text.Json.JsonValueKind.Array)
                 throw new InvalidOperationException("The CHZZK VOD response did not contain a valid content list.");
@@ -3319,7 +3341,16 @@ public partial class MainWindow : Window
 
     private void RefreshUnknownVisibleCardDurations()
     {
-        var cards = GetViewportVisibleCards()
+        var viewportCards = GetViewportVisibleCards();
+        foreach (var card in viewportCards.Where(card => card.IsDurationPending &&
+                     (card.ChannelUrl is null || !_durationRefreshInProgress.Contains(card.ChannelUrl))))
+            _durationRefreshAttempted.Remove(card);
+        var visibleChannels = viewportCards.Where(card => !card.HasKnownDuration && card.ChannelUrl is not null)
+            .Select(card => card.ChannelUrl!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var request in _durationRefreshCancellation.Where(item => !visibleChannels.Contains(item.Key)).ToArray())
+            request.Value.Cancel();
+
+        var cards = viewportCards
             .Where(card => !card.HasKnownDuration && _durationRefreshAttempted.Add(card))
             .ToArray();
         foreach (var card in cards.Where(card => !string.IsNullOrWhiteSpace(card.ChannelUrl)))
@@ -3557,6 +3588,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public double LastPositionSeconds => _lastPositionSeconds;
     public double? DurationSeconds => _durationSeconds;
     public bool HasKnownDuration => _durationSeconds is > 0;
+    public bool IsDurationPending => string.Equals(_durationDiagnostic, "\uB300\uAE30 \uC911", StringComparison.Ordinal);
     public string DurationLabel => _durationSeconds is > 0
         ? FormatDuration(_durationSeconds.Value)
         : string.IsNullOrWhiteSpace(_durationDiagnostic) ? "\uC54C \uC218 \uC5C6\uC74C" : _durationDiagnostic;
