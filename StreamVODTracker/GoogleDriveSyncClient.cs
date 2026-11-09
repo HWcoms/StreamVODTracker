@@ -1,11 +1,9 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using VODTracker.Core;
 
 namespace StreamVODTracker;
-
-internal sealed record DriveChannelPayload(SavedChannel Channel, IReadOnlyList<SavedMedia> Media);
-internal sealed record DriveLibraryPayload(int Version, DateTimeOffset UpdatedAt, IReadOnlyList<DriveChannelPayload> Channels);
 
 internal sealed class GoogleDriveSyncClient
 {
@@ -13,7 +11,6 @@ internal sealed class GoogleDriveSyncClient
     private const string SyncFolderName = "StreamVODTracker";
     private const string DriveFolderMimeType = "application/vnd.google-apps.folder";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(45) };
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _clientId;
     private readonly string _clientSecret;
     private GoogleDriveCredentials _credentials;
@@ -39,8 +36,7 @@ internal sealed class GoogleDriveSyncClient
         using var request = AuthorizedRequest(HttpMethod.Get, $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(_fileId)}?alt=media", accessToken);
         using var response = await Http.SendAsync(request, cancellationToken);
         var body = await ReadBodyAsync(response, "Could not download the VOD Tracker sync file.");
-        var payload = JsonSerializer.Deserialize<DriveLibraryPayload>(body, JsonOptions);
-        if (payload is null) return [];
+        var payload = DriveLibraryCodec.Deserialize(body);
         return payload.Channels.Select(channel => new SavedChannelData(
             channel.Channel with { ProfileImageUrl = null, ProfileImagePath = null },
             channel.Media.Select(media => media with { ThumbnailUrl = null, ThumbnailPath = null }).ToArray())).ToArray();
@@ -60,7 +56,7 @@ internal sealed class GoogleDriveSyncClient
         var channels = library.Select(channel => new DriveChannelPayload(
             channel.Channel with { ProfileImageUrl = null, ProfileImagePath = null },
             channel.Media.Select(media => media with { ThumbnailUrl = null, ThumbnailPath = null }).ToArray())).ToArray();
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(new DriveLibraryPayload(1, DateTimeOffset.UtcNow, channels), JsonOptions);
+        var bytes = DriveLibraryCodec.Serialize(new DriveLibraryPayload(1, DateTimeOffset.UtcNow, channels));
         var accessToken = await GetAccessTokenAsync(cancellationToken);
         _fileId ??= await FindOrMigrateSyncFileAsync(accessToken, cancellationToken);
         if (_fileId is null)
@@ -139,7 +135,7 @@ internal sealed class GoogleDriveSyncClient
         }
 
         using var createRequest = AuthorizedRequest(HttpMethod.Post, "https://www.googleapis.com/drive/v3/files?fields=id", accessToken);
-        createRequest.Content = new StringContent(JsonSerializer.Serialize(new { name = SyncFolderName, mimeType = DriveFolderMimeType }),
+        createRequest.Content = new StringContent(System.Text.Json.JsonSerializer.Serialize(new { name = SyncFolderName, mimeType = DriveFolderMimeType }),
             Encoding.UTF8, "application/json");
         using var createResponse = await Http.SendAsync(createRequest, cancellationToken);
         var createBody = await ReadBodyAsync(createResponse, "Could not create the app folder in Google Drive.");
@@ -164,7 +160,7 @@ internal sealed class GoogleDriveSyncClient
     private static async Task<string> CreateSyncFileAsync(string accessToken, string folderId, byte[] bytes, CancellationToken cancellationToken)
     {
         using var content = new MultipartContent("related");
-        content.Add(new StringContent(JsonSerializer.Serialize(new { name = SyncFileName, mimeType = "application/json", parents = new[] { folderId } }), Encoding.UTF8, "application/json"));
+        content.Add(new StringContent(System.Text.Json.JsonSerializer.Serialize(new { name = SyncFileName, mimeType = "application/json", parents = new[] { folderId } }), Encoding.UTF8, "application/json"));
         var media = new ByteArrayContent(bytes);
         media.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         content.Add(media);

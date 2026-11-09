@@ -4,11 +4,11 @@
 
 ## 1. 제품 개요
 
-VODTracker는 사용자가 등록한 채널의 VOD와 개인 PC의 로컬 영상을 함께 관리하는 개인용 앱이다. 장기 목표는 시청 정보와 Android 연동을 PC 서버/SQLite로 제공하는 것이지만, 현재는 Windows 단독 앱과 로컬 CSV 저장소를 구현하고 있다.
+VODTracker는 채널 VOD와 기기별 로컬 영상 참조를 관리한다. Windows와 Android는 각자 실행되며 사용자 Google Drive의 공통 메타데이터 JSON으로 동기화한다. 현재 구현은 Windows 데스크톱과 로컬 CSV, Windows OAuth/Drive 동기화다.
 
 ### 현재 데스크톱 구현 기준
 
-현재 작업 기준의 저장소는 서버/SQLite가 아니라 앱 실행 폴더의 `db` 디렉터리에 있는 채널별 UTF-8 CSV 파일이다. 서버와 SQLite는 후속 단계이며 지금 동작하는 기능으로 간주하지 않는다. CSV는 앱이 실행 시 읽고 변경 시 다시 기록하는 로컬 원본 데이터다.
+현재 Windows 저장소는 앱 실행 폴더의 `db` 디렉터리에 있는 채널별 UTF-8 CSV 파일이다. CSV는 앱이 실행 시 읽고 변경 시 다시 기록하는 로컬 원본 데이터다. Android는 별도 호스트 프로젝트에서 같은 Drive JSON을 직접 동기화한다.
 
 - CSV 식별과 파일명은 플랫폼 및 외부 `ChannelId`를 기준으로 한다. 한 파일에 채널 정보와 해당 채널 영상 정보를 저장한다.
 - CSV에는 `IsLive`를 저장하지 않는다. 라이브 여부는 실행 중 API에서 확인하는 화면 상태다.
@@ -29,10 +29,10 @@ VODTracker는 사용자가 등록한 채널의 VOD와 개인 PC의 로컬 영상
 
 ### 지원 플랫폼 및 기술 기준
 
-- Windows 데스크톱: C#, Avalonia UI, .NET SDK/runtime **10.0.4** 기준으로 구성한다. WPF를 사용하지 않는다.
-- Android: Kotlin 앱. 우선 네이티브 Android UI 및 HTTP 클라이언트를 사용한다.
-- 서버: Windows 앱과 같은 PC에서 실행하는 ASP.NET Core Web API.
-- 장기 저장소 계획: 서버 측 SQLite를 후속 단계에서 검토한다. Android 서버 동기화와 오프라인 우선 동기화도 현재 구현 범위가 아니다.
+- Windows 데스크톱: C#, Avalonia UI, .NET SDK/runtime 10.0.4. Windows 전용 저장소·자격 증명·파일 실행은 플랫폼 어댑터로 둔다.
+- Android: .NET Android 호스트와 Avalonia UI를 사용하고, 공통 카드·Drive 계약은 VODTracker.Core를 공유한다.
+- 기기 간 동기화: PC 서버 없이 각 클라이언트가 Google Drive의 동일 JSON 파일을 직접 읽고 쓴다.
+- 공통 저장 계약: Windows와 Android가 Drive JSON을 공유한다. SQLite 전환이나 PC API 서버는 Android 동기화의 전제가 아니다.
 - Excel 계획: `.xlsx` 입출력이 구현될 때 워크시트 이름은 `치지직`, `soop` 두 개로 제한한다.
 - 현재 저장소: 앱 실행 폴더의 `db/<플랫폼>_<ChannelId>_<식별해시>.csv` 파일을 채널별로 사용한다. 이미지 캐시 위치는 `thumbnail/<플랫폼·ChannelId 해시>/`다.
 
@@ -68,7 +68,7 @@ VODTracker는 사용자가 등록한 채널의 VOD와 개인 PC의 로컬 영상
 
 ## 4. 데이터 모델 및 SQLite 스키마 초안
 
-> 아래 SQLite 스키마는 서버 저장소를 도입할 때 사용할 장기 설계 초안이다. 현재 데스크톱 앱은 로컬 CSV를 사용하며 이 스키마를 실행하지 않는다. 현재 CSV에서 `IsLive`를 저장하지 않는다.
+> 아래 SQLite 스키마는 향후 로컬 데이터 저장소 전환을 검토할 때 사용할 설계 초안이다. Android 기기 간 동기화는 PC 서버나 서버 SQLite를 사용하지 않는다. 현재 데스크톱 앱은 로컬 CSV를 사용하며 이 스키마를 실행하지 않는다. 현재 CSV에서 `IsLive`를 저장하지 않는다.
 
 시간은 UTC ISO-8601로 저장하고 화면에서 로컬 시간대로 표시한다. SQLite 외래 키를 활성화하고 스키마 변경은 버전이 있는 migration으로 관리한다.
 
@@ -155,140 +155,94 @@ VODTracker는 사용자가 등록한 채널의 VOD와 개인 PC의 로컬 영상
 - (후속 요구사항) 가져오기 역시 Excel과 같은 키 우선순위 및 사용자 필드 보호 규칙을 적용한다.
 - (후속 요구사항) 가져오기는 트랜잭션으로 수행하고 dry-run 미리보기 후 사용자가 적용한다. 입력값을 수식으로 실행하지 않는다(스프레드시트 수식 주입 방지).
 
-## 6. Windows 프로젝트 구조
+## 6. 솔루션 구조와 플랫폼 경계
 
 ```text
-VODTracker/
-  VODTracker.sln
-  global.json
-  Directory.Build.props
-  src/
-    VODTracker.Desktop/          # Avalonia UI, ViewModels, Windows 진입점
-    VODTracker.Application/      # 유스케이스, DTO, 검증, 서비스 인터페이스
-    VODTracker.Domain/           # 엔티티, 값 타입, 도메인 규칙
-    VODTracker.Infrastructure/   # EF Core/SQLite, migrations, provider, 파일/프로세스
-    VODTracker.Api/              # ASP.NET Core API, 인증/로컬 네트워크 호스트
-    VODTracker.Contracts/        # API 요청/응답 계약
-  tests/
-    VODTracker.Domain.Tests/
-    VODTracker.Application.Tests/
-    VODTracker.Api.Tests/
-    VODTracker.Infrastructure.Tests/
-  android/
-    app/                         # Kotlin Android 앱
-  docs/
-    PROJECT-BRIEF.md             # 이 사양을 프로젝트 루트에도 복사해 유지
+StreamVODTracker.sln
+StreamVODTracker/                 # Windows 데스크톱 앱 (Avalonia)
+src/
+  VODTracker.Core/                # 공통 Drive 모델, JSON 계약, 병합 규칙
+  VODTracker.Domain/              # 도메인 모델
+  VODTracker.Application/          # 유스케이스와 포트
+  VODTracker.Infrastructure/      # 저장소 구현
+  VODTracker.Contracts/            # API 계약(PC/Android 동기화 경로에는 사용하지 않음)
+  VODTracker.Api/                  # 별도 실험/확장용이며 Android가 의존하지 않음
+android/VODTracker.Android/       # .NET Android + Avalonia 호스트 프로젝트
 ```
 
-- 의존 방향은 `Desktop/Api → Application → Domain`, `Infrastructure → Application/Domain`으로 유지한다. Contracts는 Desktop/Android와 API 사이 HTTP 모델만 담는다.
-- 버전은 중앙 관리(`Directory.Packages.props`)한다. `global.json`에서 SDK 10.0.4를 고정하고 roll-forward를 명시적으로 결정한다. CI/개발 환경에서 해당 SDK 설치 여부를 확인한다.
-- 플랫폼별 VOD 검색/동기화 코드는 `IVodProvider`와 `ChzzkVodProvider`, `SoopVodProvider` 구현체로 나눈다.
-- Windows API 서버는 데스크톱 앱과 같은 PC에서 시작/정지할 수 있게 하며, API 유스케이스와 데이터베이스 로직을 UI에 두지 않는다.
-
+- Windows 및 Android 플랫폼 앱은 공통 Core를 참조한다. Core는 OS 전용 UI, Credential Manager, 파일 경로, Android URI, OAuth UI를 참조하지 않는다.
+- Desktop/Android 간 통신은 없다. Drive JSON이 동기화 경로다. `VODTracker.Api`가 존재하더라도 Android가 PC API에 연결하거나 PC 실행을 요구하지 않는다.
+- 플랫폼별 OAuth와 파일 접근은 플랫폼 호스트 서비스로 구현한다. Android용 OAuth Client ID와 Windows Desktop OAuth Client ID는 분리하고 Android 앱에 client secret을 넣지 않는다.
 ## 7. Android 앱 구조
 
+Android는 .NET Android 호스트와 Avalonia UI로 구현한다. Windows와 Android가 공유할 플랫폼 중립 카드 모델·Drive DTO·병합 규칙은 VODTracker.Core에 둔다. 두 앱은 서로 직접 연결하지 않으며, 각 앱이 사용자의 Google Drive에 있는 동일한 동기화 JSON 파일을 직접 읽고 쓴다. PC가 꺼져 있어도 Android의 Drive 동기화와 카드 조회·수정은 가능해야 한다.
+
 ```text
-android/app/src/main/java/<package>/
-  data/        # Retrofit/Ktor API, DTO, repository
-  domain/      # 모델 및 사용 사례
-  ui/          # 치지직/soop/내 영상 화면, 상세/편집 화면
-  settings/    # PC 서버 주소와 연결 상태
+android/VODTracker.Android/
+  VODTracker.Android.csproj  # net10.0-android host, references VODTracker.Core
+  MainActivity.cs            # Android launch activity
+  MainApplication.cs         # Avalonia Android application
+  AndroidApp.axaml           # Android app lifetime and theme
+  AndroidHomeView.cs         # initial mobile host screen
+src/VODTracker.Core/         # shared Drive payload, codec, and merge rules
 ```
 
-- 첫 실행 시 PC 서버 주소와 포트를 입력/저장하고 연결 상태를 점검한다.
-- 온라인 항목의 URL은 Android 브라우저/앱 링크로 연다. Android 클라이언트는 PC의 로컬 파일 경로를 직접 재생할 수 없으므로 로컬 항목에서는 메타데이터와 이어보기 정보를 보여주고 `PC에서 재생` 요청을 API로 보낸다. PC가 온라인 상태가 아니면 명확히 안내한다.
-- MVP에서는 PC 서버 연결이 필요하다. 오프라인 변경 큐 및 양방향 충돌 해결은 후속 단계다.
+- Drive 파일은 `StreamVODTracker/StreamVODTracker.sync.json`을 공유한다. Android OAuth는 Android 전용 Client ID를 사용하고 클라이언트 시크릿을 APK에 포함하지 않는다. OAuth/파일 선택·앱 데이터 경로 같은 OS 전용 구현은 공통 Core 밖의 플랫폼 서비스로 둔다.
+- 현재 Desktop은 Drive `drive.file` 범위로 앱 폴더와 JSON 파일을 검색한다. Android도 동일 파일을 발견하고 편집할 수 있는지 OAuth 클라이언트를 준비해 실제 계정으로 확인한다. 필요한 경우 사용자에게 기존 파일 접근 권한을 명시적으로 부여하는 파일 선택 흐름을 사용한다. 파일을 못 찾았다는 이유로 별도 동기화 파일을 자동 생성하면 안 된다.
+- Android는 온라인 URL을 Android 브라우저 또는 플랫폼 앱에서 연다. 로컬 파일은 Android에서 선택한 파일 URI로 열며, Android는 Windows 파일 경로를 열거나 수정하지 않는다.
+- Drive 파일은 오프라인/백그라운드 동기화를 보장하지 않는다. 앱 실행·화면 활성화·사용자 동기화 및 OS가 허용하는 백그라운드 작업에서 원격 변경을 확인한다.
 
-## 8. HTTP API 초안
+## 8. Google Drive 동기화 계약
 
-Base URL 예: `http://<PC-LAN-IP>:<port>/api/v1`. JSON, UTF-8을 사용한다.
+Windows와 Android는 Drive API를 통해 동일한 JSON 파일을 교환한다. 별도 PC API 서버, PC 주소 입력, PC 전원 상태를 동기화 전제로 삼지 않는다. 현재 파일은 `version: 1`, `updatedAt`, `channels[]` 구조이며 각 채널에는 `channel`과 `media[]`가 들어간다. 플랫폼 계약을 바꾸기 전에 기존 Windows 파일과의 역호환을 확인한다.
 
-| Method | Route | 목적 |
-|---|---|---|
-| GET | `/health` | 서버 상태 및 API 버전 확인 |
-| GET | `/channels?platform=chzzk` | 채널 목록 |
-| POST | `/channels` | 채널 추가 |
-| PATCH | `/channels/{id}` | 채널 이름/주소/활성화 변경 |
-| DELETE | `/channels/{id}` | 채널 삭제(연결된 이력은 보존, ChannelId만 NULL 처리) |
-| POST | `/channels/{id}/refresh` | 동기식 또는 작업 ID 기반 새로고침 실행 |
-| GET | `/refresh-runs/{id}` | 갱신 작업 진행/결과 확인 |
-| GET | `/media?platform=&kind=&status=&channelId=&q=&cursor=` | 페이지네이션 목록/검색/필터 |
-| POST | `/media` | 온라인 VOD URL, 로컬 영상 메타데이터 수동 추가 |
-| GET | `/media/{id}` | 상세 조회 |
-| PATCH | `/media/{id}` | 제목/URL/로컬 경로 등 편집 |
-| DELETE | `/media/{id}` | 사용자 명시 삭제(연결 데이터 정책을 확인하고 수행) |
-| PUT | `/media/{id}/watch` | 상태 및 이어보기 위치 갱신, `RowVersion` 충돌 검사 |
-| PUT | `/media/{id}/notes` | 메모 저장 |
-| POST | `/media/{id}/play` | PC에서 로컬 영상 재생 요청(데스크톱 API 전용) |
-| GET | `/settings/player` | 플레이어 설정 조회(실행 파일 경로 노출 범위 제한) |
-| PUT | `/settings/player` | 플레이어 설정 변경(PC에서만 허용) |
-| GET | `/export/csv?platform=` | CSV 다운로드 |
-| POST | `/import/csv/preview` | 업로드 CSV 검증/미리보기 |
-| POST | `/import/csv/apply` | 확인된 가져오기 반영 |
+- 동기화 키는 `Platform + ChannelId` 및 `Platform + VodId`를 사용한다.
+- Android가 카드 상태나 메모를 저장할 때 Windows 로컬 영상 경로와 썸네일 캐시 경로를 삭제하거나 덮어쓰지 않는다.
+- 현재 `LocalFilePath`는 Windows 경로다. Android 영상 참조를 추가할 때 `DesktopLocalFilePath`와 Android 기기별 `AndroidLocalFileUri` 같은 분리 필드를 도입하고, 기존 파일을 안전하게 마이그레이션한다. 영상 파일 자체는 Drive 동기화 JSON에 올리지 않는다.
+- 현재 병합은 카드 레코드 전체에 대해 `UpdatedAt`이 최신인 쪽을 고른다. Android 추가 전에 사용자 필드와 기기별 파일 참조를 독립적으로 병합하고, 삭제 tombstone 및 동시 수정 충돌 정책을 정한다.
+- 하나의 JSON 파일을 여러 기기가 동시에 덮어쓰면 변경이 유실될 수 있다. 업로드 전 `modifiedTime` 재확인, 충돌 재병합·재시도 등 파일 갱신 충돌을 다룬다.
+- Android 백그라운드 동기화는 WorkManager 등 OS 제약을 고려하며 실시간 동기화를 약속하지 않는다.
 
-- 상태 코드와 오류 본문을 일관되게 정의한다. 검증 오류는 `400`, 미발견 `404`, 버전 충돌 `409`, 서버 오류 `500`을 사용한다.
-- 목록은 제한 크기 페이지네이션을 사용하고, `refresh`는 장시간 요청을 막기 위해 작업 ID 반환 방식을 우선한다.
-- DTO에는 DB 엔티티를 직접 노출하지 않는다. `RowVersion` 또는 ETag로 다중 클라이언트 덮어쓰기를 감지한다.
-- Excel 생성은 API 서버에서 `.xlsx`를 반환하거나 데스크톱에서 동일 계약으로 생성할 수 있다. 단일 구현을 선택해 동작을 일치시킨다.
+## 9. Google OAuth 및 Drive 권한
 
-## 9. 네트워크 및 보안
+- Android OAuth Client ID는 Windows Desktop Client ID와 별도로 만든다. 두 클라이언트는 같은 Google Cloud 프로젝트와 OAuth 동의 화면을 사용한다. Android 앱에 Client Secret, 서비스 계정 키, refresh token을 포함하지 않는다.
+- 가능한 최소 Drive 권한을 사용하고, `drive.file`에서 기존 Windows 생성 파일을 Android 클라이언트가 읽고 수정할 수 있는지 실제 OAuth 계정으로 검증한다. 현재 Desktop과 Android가 파일을 공유하려면 앱 생성·파일 선택에 따른 파일별 권한 동작을 확인해야 한다.
+- Drive refresh token 및 계정 연결 해제·재연결은 Android의 안전한 자격 증명 저장소와 Google Authorization API 흐름에 맞춘다.
+- Google Cloud 프로젝트 준비, Drive API 활성화, Android 패키지명·서명 인증서 등록, OAuth 동의 화면 및 공개 배포 검증 절차를 문서화한다. 앱은 사용자가 별도 Cloud 프로젝트를 만들도록 요구하지 않는다.
 
-- API 기본 바인딩은 루프백으로 시작한다. Android에서 접속을 켤 때만 사용자가 승인한 LAN 인터페이스에 바인딩한다. 라우터 포트 포워딩/인터넷 공개는 기본 비활성화한다.
-- LAN 모드에는 페어링/인증 토큰을 적용하고 Windows 방화벽에서 필요한 포트만 제한적으로 허용한다. 토큰은 기기별 취소 가능해야 하며 평문 로그를 금지한다.
-- 평문 HTTP는 신뢰 가능한 개인 LAN의 MVP 범위에서만 허용하고 위험을 설정 화면에서 알린다. 외부 네트워크 접속이 필요해지면 TLS/VPN 등 보호된 전송을 별도 설계한다.
-- 모든 입력 URL은 `http`/`https` scheme과 호스트를 검증한다. API가 임의 URL을 대신 가져오는 SSRF 형태로 만들지 않는다.
-- 파일 재생 API는 서버 호스트의 허용된 경로에 있는 미디어 항목만 실행한다. 클라이언트가 전달한 임의 명령이나 실행 파일 경로를 실행하지 않는다.
-- DB 백업/가져오기 전 기존 DB를 덮어쓰지 않고 복구 가능한 백업을 제공한다. 로그에 메모나 전체 경로를 기본 기록하지 않는다.
+## 10. 단계별 멀티플랫폼 계획
 
-## 10. 단계별 MVP 계획
+### 0단계 — 공통 데이터와 저장 규약
 
-### 0단계 — 기반
-
-- 솔루션, SDK 고정, 빌드 설정, 프로젝트 참조, SQLite migration, 설정 저장 구조를 만든다.
-- 도메인 모델, API 계약, 기본 오류/로깅 규칙을 정한다.
+- Desktop Drive JSON 구조, 필드별 병합 규칙, 버전 변경과 구버전 호환을 명확히 한다.
+- 기기별 로컬 파일 참조와 동기화 충돌 정책을 정하고 Windows 동기화 구현이 모르는 필드를 보존하도록 준비한다.
 
 ### 1단계 — Windows 단독 사용
 
-- Avalonia UI: `치지직`, `soop`, `내 영상` 탭, 목록/검색/필터, 채널 및 영상 수동 등록.
-- 시청 상태/메모/이어보기 편집과 SQLite 영구 저장.
-- 브라우저 URL 열기 및 설정 가능한 외부 플레이어로 로컬 영상 실행.
-- CSV import/export와 정확히 두 워크시트(`치지직`, `soop`)인 Excel export/import.
+- Avalonia 데스크톱 앱은 로컬 CSV와 Windows Credential Manager를 사용한다.
+- Desktop은 사용자 Google Drive에 메타데이터 JSON을 직접 동기화한다.
 
-### 2단계 — 채널 VOD 갱신
+### 2단계 — Android와 Drive 직접 동기화
 
-- 제공자별 어댑터를 연결하고 새 항목만 병합.
-- 사라진 VOD 이력 유지, 실패/부분 실패 시 기존 데이터 보존.
-- 플랫폼별 API/인증/호출 제한 적합성을 확인한 뒤 지원 가능한 연동부터 활성화.
+- .NET Android 호스트와 Android OAuth Client, Google Drive 인증·파일 읽기/쓰기 및 Core 공통 JSON 직렬화 연결.
+- Drive 연결, 데이터 읽기, 사용자 상태·메모 수정, 병합 후 업로드를 검증한다. Windows 앱이나 PC 서버가 꺼진 상태에서도 동작해야 한다.
+- 플랫폼 화면, 검색, 온라인 URL 열기, Android 로컬 파일 URI 저장을 구현한다.
+- 백그라운드 동기화 제한, 토큰 보안, 동일 파일의 동시 갱신을 처리한다.
 
-### 3단계 — PC API 및 Android
+## 11. 검증 시나리오
 
-- API 목록/상세/상태/메모/새로고침/재생 요청 구현.
-- PC 서버 주소 설정, 기기 페어링, Android 목록/검색/상태 편집/온라인 URL 열기.
-- Android에서 로컬 영상의 PC 재생 요청과 연결 오류 처리.
-
-### 후속 범위
-
-- 오프라인 동기화 큐 및 충돌 해결, YouTube provider, 메타데이터 자동 보강, 재생 상태 자동 감지.
-- 기본 MVP에는 사용자 요청으로 승인된 플랫폼 비공식 API 의존을 허용한다. 비공식 연동은 출처와 변경 가능성을 문서화하고 수동 등록 대안을 유지한다. 영상 스트리밍 프록시와 계정 비밀번호 수집 기능은 넣지 않는다.
-
-## 11. 인수 기준 및 수동 검증 시나리오
-
-1. Windows 앱에서 온라인 VOD URL을 추가하고 재생하면 기본 브라우저가 해당 URL을 연다.
-2. 로컬 파일을 추가하고 플레이어를 설정하면 설정된 실행 파일에 파일 경로와 저장된 이어보기 초가 인자로 전달된다. 인자에 공백/한글 경로가 있어도 하나의 파일 인자로 안전하게 처리된다.
-3. 시청 상태, 메모, 진행 위치를 저장한 뒤 앱을 재시작해도 값이 보존된다.
-4. 플랫폼 VOD를 저장한 뒤 제공자 응답에서 그 VOD를 제외하고 새로고침해도 기존 행, 상태, 메모, 진행 위치가 유지된다.
-5. 이미 저장된 VOD를 다시 받아도 중복 행을 만들지 않으며 사용자 필드를 덮어쓰지 않는다.
-6. 제공자 연결 실패 또는 빈 오류 응답을 기존 목록 삭제로 처리하지 않고, 마지막 갱신 실패를 표시한다.
-7. Excel 내보내기 파일에는 `치지직`, `soop` 시트가 각각 정확히 한 번 존재하고 그 외 워크시트가 없다. 플랫폼별 항목과 사라진 VOD 이력이 포함된다.
-8. CSV/Excel 가져오기에서 메모의 쉼표, 따옴표, 줄바꿈, 한글이 유지되고, 적용 전 변경 미리보기가 보인다. 파일에 없는 행은 삭제되지 않는다.
-9. Android에서 PC API에 연결해 목록 및 상태/메모를 확인·수정할 수 있다. 온라인 VOD는 Android에서 연다. 로컬 영상은 요청 시 PC 플레이어에서 열리며 PC 미연결 시 안내한다.
-10. API는 기본 설정에서 루프백만 열고, LAN 연결을 명시적으로 켜기 전 외부 기기 연결을 허용하지 않는다.
-
+1. Windows가 Drive에 만든 `StreamVODTracker.sync.json`을 Android에서 같은 계정으로 찾아 읽는다. 접근할 수 없으면 파일별 OAuth 권한/선택 흐름을 확인하며 중복 파일을 만들지 않는다.
+2. Android에서 시청 상태나 메모를 바꾸고 업로드한 후 Windows가 다운로드했을 때 변경값이 보존된다.
+3. Windows가 꺼져 있어도 Android가 Drive 데이터의 읽기·수정·업로드를 완료한다.
+4. Android 변경은 Windows의 로컬 파일 경로 및 Windows 전용 캐시 경로를 보존한다. Android URI도 다른 기기의 Android 참조를 덮어쓰지 않는다.
+5. 두 기기가 오프라인에서 같은 카드의 서로 다른 필드를 바꾼 뒤 온라인으로 돌아왔을 때 필드별 병합이 보존되고, 같은 필드 충돌은 정책에 따라 감지·해결된다.
+6. 동기화 중 네트워크 오류나 앱 종료가 발생해도 마지막 정상 Drive 파일과 로컬 데이터가 손상되지 않는다.
+7. 앱 비활성 또는 OS 백그라운드 제한 중 동기화가 지연될 수 있으며, 재실행/활성화 시 원격 변경을 다시 확인한다.
 ## 12. Rider + Codex 작업 지침
 
 - 이 문서를 기준 사양으로 삼고, 구현 전 현재 솔루션 구조와 변경 사항을 먼저 살핀다.
 - 작업을 작고 검토 가능한 단계로 나누고, 한 번에 전체 앱을 생성하거나 요구사항을 임의 생략하지 않는다.
-- 새 라이브러리/버전을 추가하기 전 .NET 10.0.4 및 Kotlin/Android 호환성을 확인하고 중앙 버전 관리를 유지한다.
+- 새 라이브러리/버전을 추가하기 전 .NET 10.0.4 및 .NET Android 호환성을 확인하고 중앙 버전 관리를 유지한다.
 - 사용자 데이터 보존 규칙을 최우선으로 한다. VOD 목록 refresh는 삭제 동기화가 아니며 기존 watch record/note/progress를 절대 초기화하지 않는다.
 - 플랫폼별 API 규칙이 확인되지 않으면 임의 엔드포인트를 추측해 구현하지 말고 수동 등록 경로를 남긴다.
 - 프로세스 실행 시 문자열 명령 조합이나 `cmd.exe`를 사용하지 않는다. URL, 파일 경로, CSV 입력값을 검증한다.

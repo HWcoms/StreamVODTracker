@@ -12,6 +12,7 @@
   </PropertyGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\src\VODTracker.Core\VODTracker.Core.csproj" />
         <AvaloniaResource Include="..\assets\app-icon.ico" Link="Assets\app-icon.ico" />
         <PackageReference Include="Avalonia" />
         <PackageReference Include="Avalonia.Desktop" />

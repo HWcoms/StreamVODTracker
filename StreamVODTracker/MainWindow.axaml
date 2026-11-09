@@ -170,11 +170,12 @@
                                                             <Border Width="54" Height="54" CornerRadius="27" BorderThickness="3"
                                                                     BorderBrush="{Binding AvatarBorderBrush}" Padding="3"
                                                                     HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                                <Border Width="42" Height="42" CornerRadius="21" ClipToBounds="True" Background="#F0EDFF">
+                                                                <Border Classes="channel-avatar-frame" Width="42" Height="42" CornerRadius="21" ClipToBounds="True" Background="#F0EDFF"
+                                                                        RenderTransformOrigin="50%,50%">
                                                                     <Grid>
                                                                         <TextBlock Text="{Binding Initial}" Foreground="#684ED8" FontSize="16"
                                                                                    FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                                                        <Image Source="{Binding ProfileImage}" Stretch="Uniform"
+                                                                        <Image Source="{Binding ProfileImage}" Stretch="Uniform" ToolTip.Tip="방송보기"
                                                                                IsVisible="{Binding HasProfileImage}"
                                                                                PointerPressed="ChannelAvatar_PointerPressed" />
                                                                     </Grid>
@@ -182,8 +183,11 @@
                                                             </Border>
                                                             <StackPanel Grid.Column="1" Spacing="5" VerticalAlignment="Center">
                                                                 <Grid ColumnDefinitions="*,Auto">
-                                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
-                                                                               TextTrimming="CharacterEllipsis" ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1"><ToolTip.Tip><TextBlock Text="{Binding DisplayName}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                                    <TextBlock Classes="channel-name" Classes.chzzk="{Binding IsChzzk}" Classes.soop="{Binding IsSoop}"
+                                                                               Text="{Binding DisplayName}" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryTextBrush}"
+                                                                               PointerPressed="ChannelName_PointerPressed" ToolTip.ShowDelay="100"
+                                                                               ToolTip.Tip="{Binding DisplayName, StringFormat='{}{0} 채널가기'}"
+                                                                               TextTrimming="CharacterEllipsis" />
                                                                     <Border Grid.Column="1" Background="{Binding PlatformBadgeBackground}" CornerRadius="5" Padding="6,2" VerticalAlignment="Center">
                                                                         <TextBlock Text="{Binding Platform}" FontSize="9" FontWeight="SemiBold" Foreground="White" />
                                                                     </Border>
@@ -631,6 +635,15 @@
         <Style Selector="Button.channel-delete:pointerover">
             <Setter Property="Background" Value="#FCE8E8" />
             <Setter Property="BorderBrush" Value="#F3C6C6" />
+        </Style>
+        <Style Selector="Border.channel-avatar-frame:pointerover">
+            <Setter Property="RenderTransform" Value="scale(1.08)" />
+        </Style>
+        <Style Selector="TextBlock.channel-name.chzzk:pointerover">
+            <Setter Property="Foreground" Value="#35B879" />
+        </Style>
+        <Style Selector="TextBlock.channel-name.soop:pointerover">
+            <Setter Property="Foreground" Value="#398FE0" />
         </Style>
         <Style Selector="Border.channel-aggregate">
             <Setter Property="Background" Value="{DynamicResource CardSurfaceBrush}" />

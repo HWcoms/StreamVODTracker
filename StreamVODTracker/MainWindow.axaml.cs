@@ -14,6 +14,7 @@ using Avalonia.Styling;
 using Avalonia.Threading;
 using Avalonia.Input;
 using Avalonia.VisualTree;
+using VODTracker.Core;
 
 namespace StreamVODTracker;
 
@@ -382,25 +383,7 @@ public partial class MainWindow : Window
             var local = _localDatabase.LoadAll();
             var remote = await client.DownloadLibraryAsync();
             var localByKey = local.ToDictionary(item => GetSyncChannelKey(item.Channel.Platform, item.Channel.ChannelId), StringComparer.OrdinalIgnoreCase);
-            var remoteByKey = remote.ToDictionary(item => GetSyncChannelKey(item.Channel.Platform, item.Channel.ChannelId), StringComparer.OrdinalIgnoreCase);
-            var merged = new List<SavedChannelData>();
-
-            foreach (var key in localByKey.Keys.Union(remoteByKey.Keys, StringComparer.OrdinalIgnoreCase))
-            {
-                localByKey.TryGetValue(key, out var localChannel);
-                remoteByKey.TryGetValue(key, out var remoteChannel);
-                if (localChannel is null) merged.Add(remoteChannel!);
-                else if (remoteChannel is null) merged.Add(localChannel);
-                else
-                {
-                    var preferredChannel = GetChannelLastUpdate(remoteChannel) > GetChannelLastUpdate(localChannel) ? remoteChannel.Channel : localChannel.Channel;
-                    var records = localChannel.Media.Concat(remoteChannel.Media)
-                        .GroupBy(item => item.VodId, StringComparer.OrdinalIgnoreCase)
-                        .Select(group => group.OrderByDescending(item => item.UpdatedAt ?? item.PublishedAt ?? DateTimeOffset.MinValue).First())
-                        .ToArray();
-                    merged.Add(new SavedChannelData(preferredChannel, records));
-                }
-            }
+            var merged = DriveLibraryMerger.Merge(local, remote);
 
             foreach (var saved in merged)
             {
@@ -446,11 +429,8 @@ public partial class MainWindow : Window
         }
     }
 
-    private static string GetSyncChannelKey(string platform, string channelId) => $"{platform}:{channelId}";
+    private static string GetSyncChannelKey(string platform, string channelId) => DriveLibraryMerger.GetChannelKey(platform, channelId);
 
-    private static DateTimeOffset GetChannelLastUpdate(SavedChannelData channel) =>
-        channel.Media.Select(item => item.UpdatedAt ?? item.PublishedAt ?? DateTimeOffset.MinValue)
-            .DefaultIfEmpty(DateTimeOffset.MinValue).Max();
     private async Task LoadChannelAppearanceAsync(ChannelEntry channel, string platformKey, string channelId,
         string? imageUrl, bool profileLookupSucceeded)
     {
@@ -789,15 +769,24 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private async void ChannelName_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if (sender is not TextBlock { DataContext: ChannelEntry channel } ||
+            !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed ||
+            !Uri.TryCreate(channel.ChannelUrl, UriKind.Absolute, out var uri)) return;
+        e.Handled = true;
+        await Launcher.LaunchUriAsync(uri);
+    }
+
     private async void ChannelAvatar_PointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
         if (sender is not Image { DataContext: ChannelEntry channel } ||
-            !Uri.TryCreate(channel.ChannelUrl, UriKind.Absolute, out var uri)) return;
+            !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
         e.Handled = true;
-        ApplyChannelClickSelection(channel, e.KeyModifiers);
-        UpdateCards();
-        _ = RefreshChannelDurationsAsync(channel);
-        await Launcher.LaunchUriAsync(uri);
+        var liveUrl = channel.Platform == "SOOP"
+            ? $"https://play.sooplive.com/{Uri.EscapeDataString(channel.ChannelId)}"
+            : $"https://chzzk.naver.com/live/{Uri.EscapeDataString(channel.ChannelId)}";
+        await Launcher.LaunchUriAsync(new Uri(liveUrl));
     }
 
     private void ApplyChannelClickSelection(ChannelEntry channel, KeyModifiers modifiers)
@@ -3905,6 +3894,8 @@ public sealed class ChannelEntry : System.ComponentModel.INotifyPropertyChanged,
     public string Platform { get; }
     public string ChannelId { get; }
     public IBrush PlatformBadgeBackground => new SolidColorBrush(Color.Parse(Platform == "SOOP" ? "#398FE0" : "#35B879"));
+    public bool IsChzzk => Platform != "SOOP";
+    public bool IsSoop => Platform == "SOOP";
     public string DisplayName
     {
         get => _displayName;

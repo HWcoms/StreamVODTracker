@@ -1,31 +1,9 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using VODTracker.Core;
 
 namespace StreamVODTracker;
-
-internal sealed record SavedChannel(string Platform, string ChannelId, string Name, string Description, string Url,
-    string? ProfileImageUrl, string? ProfileImagePath);
-
-internal sealed record SavedMedia(
-    string Title,
-    string Platform,
-    string SourceType,
-    string SourceLabel,
-    string SourceValue,
-    DateTimeOffset? PublishedAt,
-    string WatchStatus,
-    string? ThumbnailUrl,
-    string? ThumbnailPath,
-    string Availability,
-    string? OnlineUrl,
-    string? LocalFilePath,
-    string VodId = "",
-    double LastPositionSeconds = 0,
-    string Memo = "",
-    DateTimeOffset? UpdatedAt = null);
-
-internal sealed record SavedChannelData(SavedChannel Channel, IReadOnlyList<SavedMedia> Media);
 
 internal interface IVodRepository
 {
