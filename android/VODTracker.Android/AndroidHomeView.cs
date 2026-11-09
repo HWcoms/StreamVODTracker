@@ -344,44 +344,280 @@ internal sealed class AndroidHomeView : UserControl
     {
         var platform = LibraryTransfer.NormalizePlatform(data.Channel.Platform);
         var platformName = platform == "SOOP" ? "SOOP" : "치지직";
+        var accent = platform == "SOOP" ? "#398FE0" : "#35B879";
         var content = new StackPanel { Spacing = 14 };
         content.Children.Add(MakeButton("← 채널 목록", () => { _selectedChannelKey = null; ShowLibrary(); }));
+
+        var avatarInitial = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(data.Channel.Name) ? "?" : data.Channel.Name[..1],
+            FontSize = 24,
+            FontWeight = FontWeight.Bold,
+            Foreground = Brush(accent),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var avatarImage = new Image { Stretch = Stretch.UniformToFill, IsVisible = false };
+        var avatarPath = _libraryStore.GetChannelImagePath(platform, data.Channel.ChannelId);
+        if (File.Exists(avatarPath))
+        {
+            try
+            {
+                avatarImage.Source = new Bitmap(avatarPath);
+                avatarImage.IsVisible = true;
+                avatarInitial.IsVisible = false;
+            }
+            catch (Exception exception) when (exception is IOException or ArgumentException or InvalidOperationException) { }
+        }
+        var avatar = new Border
+        {
+            Width = 68,
+            Height = 68,
+            CornerRadius = new CornerRadius(34),
+            BorderThickness = new Thickness(3),
+            BorderBrush = Brush(accent),
+            Padding = new Thickness(3),
+            Child = new Border
+            {
+                CornerRadius = new CornerRadius(30),
+                ClipToBounds = true,
+                Background = Brush("#F0EDFF"),
+                Child = new Grid { Children = { avatarInitial, avatarImage } }
+            }
+        };
+        var heading = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+            ColumnSpacing = 14,
+            Children =
+            {
+                avatar,
+                new StackPanel
+                {
+                    Spacing = 6,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children =
+                    {
+                        new TextBlock { Text = platformName, FontSize = 12, FontWeight = FontWeight.Bold, Foreground = Brush(accent) },
+                        new TextBlock { Text = data.Channel.Name, FontSize = 19, FontWeight = FontWeight.Bold, Foreground = Brush("#292B3A"), TextWrapping = TextWrapping.Wrap },
+                        new TextBlock { Text = string.IsNullOrWhiteSpace(data.Channel.Description) ? $"채널 ID: {data.Channel.ChannelId}" : data.Channel.Description, FontSize = 13, Foreground = Brush("#777B8B"), TextWrapping = TextWrapping.Wrap, MaxLines = 2 }
+                    }
+                }
+            }
+        };
+        Grid.SetColumn(heading.Children[1], 1);
         content.Children.Add(Card(new StackPanel
+        {
+            Spacing = 12,
+            Children =
+            {
+                heading,
+                new Grid
+                {
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                    Children =
+                    {
+                        new TextBlock { Text = $"저장된 VOD {data.Media.Count}개", FontSize = 13, FontWeight = FontWeight.SemiBold, Foreground = Brush("#55596A"), VerticalAlignment = VerticalAlignment.Center },
+                        MakeButton("채널 열기", () => _ = OpenAddressAsync(data.Channel.Url))
+                    }
+                }
+            }
+        }));
+        var detailsCardContent = (StackPanel)((Border)content.Children[^1]).Child!;
+        var channelActions = (Grid)detailsCardContent.Children[1];
+        Grid.SetColumn(channelActions.Children[1], 1);
+
+        var search = new TextBox
+        {
+            PlaceholderText = "VOD 제목 검색",
+            MinHeight = 42,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Background = Brush("#FFFFFF"),
+            Foreground = Brush("#292B3A"),
+            BorderBrush = Brush("#E5E6ED"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(9)
+        };
+        var statusFilter = new ComboBox
+        {
+            MinHeight = 40,
+            SelectedIndex = 0,
+            ItemsSource = new[] { "전체 상태", "미시청", "시청중", "시청완료" }
+        };
+        var filters = new Grid { ColumnDefinitions = new ColumnDefinitions("*,140"), ColumnSpacing = 8 };
+        filters.Children.Add(search);
+        filters.Children.Add(statusFilter);
+        Grid.SetColumn(statusFilter, 1);
+        content.Children.Add(filters);
+
+        var mediaList = new StackPanel { Spacing = 12 };
+        void RefreshMediaList()
+        {
+            mediaList.Children.Clear();
+            var query = search.Text?.Trim() ?? string.Empty;
+            var selectedStatus = statusFilter.SelectedItem as string ?? "전체 상태";
+            var mediaItems = data.Media
+                .Where(item => (query.Length == 0 || item.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase)) &&
+                    (selectedStatus == "전체 상태" || (string.IsNullOrWhiteSpace(item.WatchStatus) ? "미시청" : item.WatchStatus) == selectedStatus))
+                .OrderByDescending(item => item.PublishedAt)
+                .ToArray();
+            if (mediaItems.Length == 0)
+            {
+                mediaList.Children.Add(Card(new TextBlock
+                {
+                    Text = data.Media.Count == 0 ? "이 채널에 저장된 VOD가 없습니다." : "검색 조건에 맞는 VOD가 없습니다.",
+                    FontSize = 14,
+                    Foreground = Brush("#777B8B"),
+                    TextWrapping = TextWrapping.Wrap
+                }));
+                return;
+            }
+
+            foreach (var media in mediaItems)
+                mediaList.Children.Add(BuildMediaCard(data.Channel, media, accent));
+        }
+        search.TextChanged += (_, _) => RefreshMediaList();
+        statusFilter.SelectionChanged += (_, _) => RefreshMediaList();
+        content.Children.Add(mediaList);
+        RefreshMediaList();
+        return content;
+    }
+
+    private Control BuildMediaCard(SavedChannel channel, SavedMedia media, string accent)
+    {
+        var status = string.IsNullOrWhiteSpace(media.WatchStatus) ? "미시청" : media.WatchStatus;
+        var statusColor = status switch
+        {
+            "시청완료" => "#2E9B57",
+            "시청중" => "#D99B18",
+            _ => "#D84040"
+        };
+        var thumbnailImage = new Image { Stretch = Stretch.UniformToFill, IsVisible = false };
+        var playIndicator = new Border
+        {
+            Width = 54,
+            Height = 54,
+            CornerRadius = new CornerRadius(27),
+            Background = Brush(accent),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock { Text = "▶", FontSize = 24, Foreground = Brushes.White, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }
+        };
+        var thumbnailContent = new Grid
+        {
+            Background = Brush("#202536"),
+            Height = 176,
+            Children =
+            {
+                thumbnailImage,
+                playIndicator,
+                new TextBlock { Text = "VOD", FontSize = 11, FontWeight = FontWeight.Bold, Foreground = Brushes.White, Margin = new Thickness(12), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top },
+                new Border
+                {
+                    Background = Brush(statusColor),
+                    CornerRadius = new CornerRadius(7),
+                    Padding = new Thickness(8, 4),
+                    Margin = new Thickness(10),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Top,
+                    Child = new TextBlock { Text = status, FontSize = 11, FontWeight = FontWeight.Bold, Foreground = Brushes.White }
+                }
+            }
+        };
+        if (!string.IsNullOrWhiteSpace(media.ThumbnailUrl))
+            _ = LoadMediaThumbnailAsync(channel.Platform, media.ThumbnailUrl, thumbnailImage, playIndicator);
+        var published = media.PublishedAt?.ToLocalTime().ToString("yyyy.MM.dd HH:mm") ?? "날짜 정보 없음";
+        var sourceLabel = string.IsNullOrWhiteSpace(media.OnlineUrl) ? "PC 파일" : "온라인 VOD";
+        var cardContent = new StackPanel
         {
             Spacing = 9,
             Children =
             {
-                new TextBlock { Text = platformName, FontSize = 12, FontWeight = FontWeight.Bold, Foreground = Brush(platform == "SOOP" ? "#398FE0" : "#35B879") },
-                new TextBlock { Text = data.Channel.Name, FontSize = 20, FontWeight = FontWeight.Bold, Foreground = Brush("#292B3A"), TextWrapping = TextWrapping.Wrap },
-                new TextBlock { Text = string.IsNullOrWhiteSpace(data.Channel.Description) ? "채널 설명이 없습니다." : data.Channel.Description, FontSize = 14, Foreground = Brush("#777B8B"), TextWrapping = TextWrapping.Wrap },
-                new TextBlock { Text = $"채널 ID: {data.Channel.ChannelId}", FontSize = 12, Foreground = Brush("#777B8B"), TextWrapping = TextWrapping.Wrap },
-                new TextBlock { Text = data.Channel.Url, FontSize = 12, Foreground = Brush("#777B8B"), TextWrapping = TextWrapping.Wrap },
-                new TextBlock { Text = $"저장된 VOD {data.Media.Count}개", FontSize = 13, FontWeight = FontWeight.SemiBold, Foreground = Brush("#292B3A") }
-            }
-        }));
-
-        if (data.Media.Count == 0)
-            content.Children.Add(Card(new TextBlock { Text = "이 채널에 저장된 VOD가 없습니다.", FontSize = 14, Foreground = Brush("#777B8B") }));
-        else
-            foreach (var media in data.Media.OrderByDescending(item => item.PublishedAt))
-            {
-                var published = media.PublishedAt?.ToLocalTime().ToString("yyyy.MM.dd HH:mm") ?? "날짜 정보 없음";
-                var watchStatus = string.IsNullOrWhiteSpace(media.WatchStatus) ? "미시청" : media.WatchStatus;
-                var mediaLocation = string.IsNullOrWhiteSpace(media.OnlineUrl) ? media.LocalFilePath ?? string.Empty : media.OnlineUrl;
-                content.Children.Add(Card(new StackPanel
+                new TextBlock { Text = media.Title, FontSize = 16, FontWeight = FontWeight.SemiBold, Foreground = Brush("#292B3A"), TextWrapping = TextWrapping.Wrap, MaxLines = 3 },
+                new Grid
                 {
-                    Spacing = 5,
+                    ColumnDefinitions = new ColumnDefinitions("*,Auto"),
                     Children =
                     {
-                        new TextBlock { Text = media.Title, FontSize = 14, FontWeight = FontWeight.SemiBold, Foreground = Brush("#292B3A"), TextWrapping = TextWrapping.Wrap },
-                        new TextBlock { Text = $"{published}  ·  {watchStatus}", FontSize = 12, Foreground = Brush("#777B8B") },
-                        new TextBlock { Text = mediaLocation, FontSize = 12, Foreground = Brush("#777B8B"), TextWrapping = TextWrapping.Wrap }
+                        new TextBlock { Text = published, FontSize = 12, Foreground = Brush("#777B8B"), VerticalAlignment = VerticalAlignment.Center },
+                        new TextBlock { Text = sourceLabel, FontSize = 11, Foreground = Brush(accent), VerticalAlignment = VerticalAlignment.Center }
                     }
-                }));
+                }
             }
-        return content;
+        };
+        Grid.SetColumn(cardContent.Children[0], 0);
+        Grid.SetColumn(((Grid)cardContent.Children[1]).Children[1], 1);
+        if (!string.IsNullOrWhiteSpace(media.Memo))
+            cardContent.Children.Add(new TextBlock { Text = media.Memo, FontSize = 12, Foreground = Brush("#777B8B"), TextWrapping = TextWrapping.Wrap, MaxLines = 2 });
+
+        var statusButton = MakeButton("상태 변경 · " + status, () =>
+        {
+            var nextStatus = status switch { "미시청" => "시청중", "시청중" => "시청완료", _ => "미시청" };
+            _libraryStore.UpdateWatchStatus(channel.Platform, channel.ChannelId, media.VodId, nextStatus);
+            ShowLibrary();
+        });
+        statusButton.PointerPressed += (_, e) => e.Handled = true;
+        cardContent.Children.Add(statusButton);
+
+        var card = Card(new StackPanel { Spacing = 0, Children = { thumbnailContent, new Border { Height = 1, Background = Brush("#E8E9EF") }, new Border { Padding = new Thickness(14), Child = cardContent } } });
+        card.PointerPressed += (_, e) =>
+        {
+            if (!e.GetCurrentPoint(card).Properties.IsLeftButtonPressed || string.IsNullOrWhiteSpace(media.OnlineUrl)) return;
+            e.Handled = true;
+            _ = OpenAddressAsync(media.OnlineUrl);
+        };
+        return card;
     }
 
+    private static Task OpenAddressAsync(string? address)
+    {
+        if (Uri.TryCreate(address, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https")
+        {
+            var intent = new global::Android.Content.Intent(global::Android.Content.Intent.ActionView, global::Android.Net.Uri.Parse(uri.AbsoluteUri));
+            intent.AddFlags(global::Android.Content.ActivityFlags.NewTask);
+            global::Android.App.Application.Context.StartActivity(intent);
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task LoadMediaThumbnailAsync(string platform, string thumbnailUrl, Image image, Control placeholder)
+    {
+        if (!Uri.TryCreate(thumbnailUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https")) return;
+
+        var imagePath = _libraryStore.GetMediaThumbnailPath(thumbnailUrl);
+        string? temporaryPath = null;
+        try
+        {
+            if (!File.Exists(imagePath))
+            {
+                var bytes = await AndroidChannelProfileService.DownloadImageAsync(thumbnailUrl, LibraryTransfer.NormalizePlatform(platform));
+                temporaryPath = imagePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                await File.WriteAllBytesAsync(temporaryPath, bytes);
+                File.Move(temporaryPath, imagePath, overwrite: true);
+                temporaryPath = null;
+            }
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                try
+                {
+                    image.Source = new Bitmap(imagePath);
+                    image.IsVisible = true;
+                    placeholder.IsVisible = false;
+                }
+                catch (Exception exception) when (exception is IOException or ArgumentException or InvalidOperationException) { }
+            });
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidDataException or UnauthorizedAccessException) { }
+        finally
+        {
+            if (temporaryPath is not null)
+            {
+                try { File.Delete(temporaryPath); }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+            }
+        }
+    }
     private void ApplyChannelSearch(string query)
     {
         foreach (var (searchText, view) in _channelSearchItems)

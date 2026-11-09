@@ -53,7 +53,8 @@ internal sealed class AndroidLibraryStore
                     OnlineUrl = NullIfEmpty(row.Url),
                     LocalFilePath = NullIfEmpty(row.LocalFilePath),
                     SourceValue = row.Url.Length > 0 ? row.Url : row.LocalFilePath,
-                    PublishedAt = row.PublishedAt
+                    PublishedAt = row.PublishedAt,
+                    ThumbnailUrl = NullIfEmpty(row.ThumbnailUrl) ?? existing.ThumbnailUrl
                 };
             }
             else
@@ -62,7 +63,7 @@ internal sealed class AndroidLibraryStore
                 var sourceValue = row.Url.Length > 0 ? row.Url : row.LocalFilePath;
                 media.Add(new SavedMedia(row.Title, row.Platform, sourceType,
                     row.Url.Length > 0 && Uri.TryCreate(row.Url, UriKind.Absolute, out var uri) ? uri.Host : Path.GetFileName(row.LocalFilePath),
-                    sourceValue, row.PublishedAt, row.WatchStatus, null, null,
+                    sourceValue, row.PublishedAt, row.WatchStatus, NullIfEmpty(row.ThumbnailUrl), null,
                     row.LocalFilePath.Length > 0 ? "파일 경로 확인 필요" : "링크 사용 가능",
                     NullIfEmpty(row.Url), NullIfEmpty(row.LocalFilePath), row.VodId,
                     row.LastPositionSeconds, row.Memo,
@@ -88,6 +89,14 @@ internal sealed class AndroidLibraryStore
         return Path.Combine(directory, Convert.ToHexString(SHA256.HashData(key)) + ".img");
     }
 
+    public string GetMediaThumbnailPath(string thumbnailUrl)
+    {
+        var directory = Path.Combine(global::Android.App.Application.Context.FilesDir!.AbsolutePath!, "media-thumbnails");
+        Directory.CreateDirectory(directory);
+        var key = SHA256.HashData(Encoding.UTF8.GetBytes(thumbnailUrl));
+        return Path.Combine(directory, Convert.ToHexString(key) + ".img");
+    }
+
     public void UpdateChannelProfile(string platform, string channelId, string name, string description, string? imageUrl, string? imagePath)
     {
         var channels = LoadAll().ToDictionary(item => Key(item.Channel.Platform, item.Channel.ChannelId), StringComparer.OrdinalIgnoreCase);
@@ -101,6 +110,19 @@ internal sealed class AndroidLibraryStore
             ProfileImagePath = string.IsNullOrWhiteSpace(imagePath) ? existing.Channel.ProfileImagePath : imagePath
         };
         channels[key] = existing with { Channel = updatedChannel };
+        Save(channels.Values);
+    }
+
+    public void UpdateWatchStatus(string platform, string channelId, string vodId, string watchStatus)
+    {
+        var channels = LoadAll().ToDictionary(item => Key(item.Channel.Platform, item.Channel.ChannelId), StringComparer.OrdinalIgnoreCase);
+        var key = Key(platform, channelId);
+        if (!channels.TryGetValue(key, out var existing)) return;
+
+        var media = existing.Media.Select(item => item.VodId.Equals(vodId, StringComparison.OrdinalIgnoreCase)
+            ? item with { WatchStatus = watchStatus, UpdatedAt = DateTimeOffset.UtcNow }
+            : item).ToArray();
+        channels[key] = existing with { Media = media };
         Save(channels.Values);
     }
 

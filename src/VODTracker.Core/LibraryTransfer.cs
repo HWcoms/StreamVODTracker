@@ -6,11 +6,11 @@ namespace VODTracker.Core;
 
 public sealed record TransferMedia(string Platform, string ChannelId, string ChannelName, string ChannelUrl,
     string VodId, string Title, string Url, DateTimeOffset? PublishedAt, string WatchStatus,
-    double LastPositionSeconds, string LocalFilePath, string Memo, string UpdatedAt);
+    double LastPositionSeconds, string LocalFilePath, string Memo, string UpdatedAt, string ThumbnailUrl = "");
 
 public static class LibraryTransfer
 {
-    private static readonly string[] Columns = ["Platform", "ChannelId", "ChannelName", "ChannelUrl", "VodId", "Title", "Url", "PublishedAt", "WatchStatus", "LastPositionSeconds", "LocalFilePath", "Memo", "UpdatedAt"];
+    private static readonly string[] Columns = ["Platform", "ChannelId", "ChannelName", "ChannelUrl", "VodId", "Title", "Url", "PublishedAt", "WatchStatus", "LastPositionSeconds", "LocalFilePath", "Memo", "UpdatedAt", "ThumbnailUrl"];
 
     public static void ExportCsv(string path, IEnumerable<SavedChannelData> channels)
     {
@@ -62,16 +62,19 @@ public static class LibraryTransfer
                 throw new InvalidDataException("Platform은 CHZZK/치지직 또는 SOOP이어야 하며, ChannelId와 Title은 필수입니다.");
             var url = Value(row, "Url").Trim();
             var channelUrl = Value(row, "ChannelUrl").Trim();
+            var thumbnailUrl = Value(row, "ThumbnailUrl").Trim();
             if (channelUrl.Length > 0 && (!Uri.TryCreate(channelUrl, UriKind.Absolute, out var channelUri) || channelUri.Scheme is not ("https" or "http")))
                 throw new InvalidDataException($"{channelId}의 ChannelUrl이 올바르지 않습니다.");
             if (url.Length > 0 && (!Uri.TryCreate(url, UriKind.Absolute, out var mediaUri) || mediaUri.Scheme is not ("https" or "http")))
                 throw new InvalidDataException($"{title}의 Url이 올바르지 않습니다.");
+            if (thumbnailUrl.Length > 0 && (!Uri.TryCreate(thumbnailUrl, UriKind.Absolute, out var thumbnailUri) || thumbnailUri.Scheme is not ("https" or "http")))
+                throw new InvalidDataException($"{title}의 ThumbnailUrl이 올바르지 않습니다.");
             DateTimeOffset? date = DateTimeOffset.TryParse(Value(row, "PublishedAt"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed) ? parsed : null;
             var vodId = Value(row, "VodId").Trim();
             if (vodId.Length == 0) vodId = GetVodId(platform, url, Value(row, "LocalFilePath"), title);
             var position = double.TryParse(Value(row, "LastPositionSeconds"), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? Math.Max(0, seconds) : 0;
             result.Add(new TransferMedia(platform, channelId, Value(row, "ChannelName").Trim(), channelUrl, vodId,
-                title, url, date, Value(row, "WatchStatus").Trim(), position, Value(row, "LocalFilePath").Trim(), Value(row, "Memo"), Value(row, "UpdatedAt")));
+                title, url, date, Value(row, "WatchStatus").Trim(), position, Value(row, "LocalFilePath").Trim(), Value(row, "Memo"), Value(row, "UpdatedAt"), thumbnailUrl));
         }
         return result;
     }
@@ -103,12 +106,12 @@ public static class LibraryTransfer
         var platform = NormalizePlatform(data.Channel.Platform);
         return new TransferMedia(platform, data.Channel.ChannelId, data.Channel.Name, data.Channel.Url,
             GetVodId(platform, url, item.LocalFilePath ?? "", item.Title), item.Title, url, item.PublishedAt,
-            item.WatchStatus, item.LastPositionSeconds, item.LocalFilePath ?? "", item.Memo, (item.UpdatedAt ?? DateTimeOffset.UtcNow).ToString("O", CultureInfo.InvariantCulture));
+            item.WatchStatus, item.LastPositionSeconds, item.LocalFilePath ?? "", item.Memo, (item.UpdatedAt ?? DateTimeOffset.UtcNow).ToString("O", CultureInfo.InvariantCulture), item.ThumbnailUrl ?? "");
     }));
 
     private static void WriteTransferRow(TextWriter writer, TransferMedia row) =>
         WriteRow(writer, [row.Platform, row.ChannelId, row.ChannelName, row.ChannelUrl, row.VodId, row.Title, row.Url,
-            row.PublishedAt?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? "", row.WatchStatus, row.LastPositionSeconds.ToString(CultureInfo.InvariantCulture), row.LocalFilePath, row.Memo, row.UpdatedAt]);
+            row.PublishedAt?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? "", row.WatchStatus, row.LastPositionSeconds.ToString(CultureInfo.InvariantCulture), row.LocalFilePath, row.Memo, row.UpdatedAt, row.ThumbnailUrl]);
 
 
     private static void WriteRow(TextWriter writer, IEnumerable<string> fields) => writer.WriteLine(string.Join(',', fields.Select(value => value.IndexOfAny([',', '"', '\r', '\n']) >= 0 ? $"\"{value.Replace("\"", "\"\"")}\"" : value)));
