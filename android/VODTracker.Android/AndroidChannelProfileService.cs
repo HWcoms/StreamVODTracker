@@ -4,7 +4,7 @@ using VODTracker.Core;
 
 namespace VODTracker.Android;
 
-internal sealed record AndroidChannelProfile(string Name, string Description, string? ImageUrl, bool IsLive);
+internal sealed record AndroidChannelProfile(string Name, string Description, string? ImageUrl, bool IsLive, int? VodCount = null);
 
 internal static class AndroidChannelProfileService
 {
@@ -53,9 +53,24 @@ internal static class AndroidChannelProfileService
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.UserAgent.ParseAdd(UserAgent);
         request.Headers.Referrer = new Uri(LibraryTransfer.NormalizePlatform(platform) == "SOOP" ? "https://www.sooplive.com/" : "https://chzzk.naver.com/");
-        using var response = await Client.SendAsync(request, cancellationToken);
+        using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        const int maxImageBytes = 5 * 1024 * 1024;
+        if (response.Content.Headers.ContentLength is > maxImageBytes)
+            throw new InvalidDataException("이미지 다운로드 크기가 5MB 제한을 초과했습니다.");
+
+        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var destination = new MemoryStream();
+        var buffer = new byte[81920];
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer, cancellationToken);
+            if (read == 0) break;
+            if (destination.Length + read > maxImageBytes)
+                throw new InvalidDataException("이미지 다운로드 크기가 5MB 제한을 초과했습니다.");
+            destination.Write(buffer, 0, read);
+        }
+        return destination.ToArray();
     }
 
     public static string BuildSoopFallbackImageUrl(string channelId) =>
@@ -71,7 +86,8 @@ internal static class AndroidChannelProfileService
         if (string.IsNullOrWhiteSpace(responseId) || !responseId.Equals(channelId, StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(name))
             throw new InvalidDataException("치지직 채널 ID가 응답과 일치하지 않습니다.");
         return new AndroidChannelProfile(name, ReadString(content, "channelDescription") ?? string.Empty,
-            ReadString(content, "channelImageUrl"), content.TryGetProperty("openLive", out var openLive) && openLive.ValueKind == JsonValueKind.True);
+            ReadString(content, "channelImageUrl"), content.TryGetProperty("openLive", out var openLive) && openLive.ValueKind == JsonValueKind.True,
+            ReadVodCount(content));
     }
 
     private static AndroidChannelProfile ParseSoop(JsonElement root, string channelId)
@@ -88,7 +104,18 @@ internal static class AndroidChannelProfileService
         var imageUrl = ReadString(root, "profile_image") ?? ReadString(station, "profile_image");
         var isLive = root.TryGetProperty("broad", out var broad) && broad.ValueKind == JsonValueKind.Object &&
                      broad.TryGetProperty("broad_no", out var broadNo) && IsPositive(broadNo);
-        return new AndroidChannelProfile(name, description, imageUrl, isLive);
+        return new AndroidChannelProfile(name, description, imageUrl, isLive, ReadVodCount(station) ?? ReadVodCount(root));
+    }
+
+    private static int? ReadVodCount(JsonElement element)
+    {
+        foreach (var property in new[] { "total_vod", "station_total_vod", "vod_count", "vodCount", "totalVodCount", "videoCount" })
+        {
+            if (!element.TryGetProperty(property, out var value)) continue;
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number >= 0) return number;
+            if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out number) && number >= 0) return number;
+        }
+        return null;
     }
 
     private static string? ReadString(JsonElement element, string name) =>

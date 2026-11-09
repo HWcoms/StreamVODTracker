@@ -19,6 +19,7 @@ public sealed class SettingsWindow : Window
     private readonly TextBlock _driveStatus;
     private readonly TextBlock _driveClientIdLabel;
     private readonly ComboBox _themePicker;
+    private readonly TextBox _cardBatchSizeInput;
     private readonly TextBox _driveClientIdInput;
     private readonly TextBox _driveClientSecretInput;
     private readonly TextBox _driveCheckHoursInput;
@@ -83,6 +84,25 @@ public sealed class SettingsWindow : Window
         _themePicker.Items.Add("라이트");
         _themePicker.Items.Add("다크");
         _themePicker.SelectedIndex = isDarkTheme ? 1 : 0;
+
+        _cardBatchSizeInput = new TextBox { MinHeight = 38, Width = 120, Text = settingsStore.LoadCardBatchSize().ToString(), Watermark = "120" };
+        var libraryCard = new Border
+        {
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(18),
+            Child = new StackPanel
+            {
+                Spacing = 9,
+                Children =
+                {
+                    new TextBlock { Text = "VOD 카드 표시 수", FontSize = 16, FontWeight = FontWeight.SemiBold },
+                    new TextBlock { Text = "처음 표시할 카드 수이며, 스크롤하면 같은 수만큼 더 불러옵니다. (20~1000)", TextWrapping = TextWrapping.Wrap, FontSize = 12 },
+                    _cardBatchSizeInput
+                }
+            }
+        };
+        _cardBatchSizeInput.LostFocus += (_, _) => SaveCardBatchSize();
 
         _themeCard = new Border
         {
@@ -309,12 +329,12 @@ public sealed class SettingsWindow : Window
         _driveConnectButton.Click += async (_, _) => await ConnectGoogleAccountAsync();
         _driveDisconnectButton.Click += (_, _) => DisconnectGoogleAccount();
         _driveSyncButton.Click += async (_, _) => await SyncSavedGoogleAccountAsync();
-        Closed += (_, _) => { SaveGoogleOAuthClientId(); SaveGoogleOAuthClientSecret(); SaveDriveCheckInterval(); };
+        Closed += (_, _) => { SaveGoogleOAuthClientId(); SaveGoogleOAuthClientSecret(); SaveDriveCheckInterval(); SaveCardBatchSize(); };
         var content = new StackPanel
         {
             Spacing = 18,
             Margin = new Thickness(26),
-            Children = { _titleText, _descriptionText, _themeCard, _playerCard, _driveCard }
+            Children = { _titleText, _descriptionText, _themeCard, libraryCard, _playerCard, _driveCard }
         };
         Content = new ScrollViewer
         {
@@ -326,6 +346,14 @@ public sealed class SettingsWindow : Window
     }
 
     private void SaveGoogleOAuthClientId() => _settingsStore.SaveGoogleOAuthClientId(_driveClientIdInput.Text ?? "");
+
+    private void SaveCardBatchSize()
+    {
+        var size = int.TryParse(_cardBatchSizeInput.Text, out var parsed) ? parsed : 120;
+        size = Math.Clamp(size, 20, 1000);
+        _settingsStore.SaveCardBatchSize(size);
+        _cardBatchSizeInput.Text = size.ToString();
+    }
 
     private void SaveGoogleOAuthClientSecret() => _settingsStore.SaveGoogleOAuthClientSecret(_driveClientSecretInput.Text ?? "");
 

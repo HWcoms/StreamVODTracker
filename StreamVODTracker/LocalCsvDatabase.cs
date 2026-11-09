@@ -19,6 +19,13 @@ internal sealed class LocalCsvDatabase : IVodRepository
         "RecordType", "Platform", "ChannelId", "ChannelName", "ChannelDescription", "ChannelUrl",
         "ChannelProfileImageUrl", "ChannelProfileImagePath",
         "VodId", "Title", "SourceType", "Url", "LocalFilePath", "PublishedAtUtc", "WatchStatus",
+        "LastPositionSeconds", "Memo", "UpdatedAt", "ThumbnailUrl", "ThumbnailPath", "Favorite"
+    ];
+    private static readonly string[] PreviousCurrentProfileHeader =
+    [
+        "RecordType", "Platform", "ChannelId", "ChannelName", "ChannelDescription", "ChannelUrl",
+        "ChannelProfileImageUrl", "ChannelProfileImagePath",
+        "VodId", "Title", "SourceType", "Url", "LocalFilePath", "PublishedAtUtc", "WatchStatus",
         "LastPositionSeconds", "Memo", "UpdatedAt", "ThumbnailUrl", "ThumbnailPath"
     ];
     private static readonly string[] PreviousHeaderWithDuration =
@@ -92,21 +99,22 @@ internal sealed class LocalCsvDatabase : IVodRepository
                 var rows = ReadCsv(path);
                 if (rows.Count == 0) continue;
                 var hasProfileColumns = rows[0].SequenceEqual(Header, StringComparer.Ordinal);
+                var hasPreviousCurrentProfileColumns = rows[0].SequenceEqual(PreviousCurrentProfileHeader, StringComparer.Ordinal);
                 var hasPreviousProfileColumns = rows[0].SequenceEqual(PreviousHeaderWithDuration, StringComparer.Ordinal);
                 var hasPreviousCurrentColumns = rows[0].SequenceEqual(PreviousCurrentHeader, StringComparer.Ordinal);
                 var hasExtendedColumns = rows[0].SequenceEqual(PreviousExtendedHeader, StringComparer.Ordinal);
                 var hasPreviousColumns = rows[0].SequenceEqual(PreviousHeader, StringComparer.Ordinal);
                 var isProfileLegacy = rows[0].SequenceEqual(ProfileLegacyHeader, StringComparer.Ordinal);
                 var isLegacy = rows[0].SequenceEqual(LegacyHeader, StringComparer.Ordinal);
-                if (!hasProfileColumns && !hasPreviousProfileColumns && !hasPreviousCurrentColumns && !hasExtendedColumns && !hasPreviousColumns && !isProfileLegacy && !isLegacy) continue;
-                var hasChannelIdColumn = hasProfileColumns || hasPreviousProfileColumns || hasPreviousCurrentColumns || hasExtendedColumns || hasPreviousColumns;
+                if (!hasProfileColumns && !hasPreviousCurrentProfileColumns && !hasPreviousProfileColumns && !hasPreviousCurrentColumns && !hasExtendedColumns && !hasPreviousColumns && !isProfileLegacy && !isLegacy) continue;
+                var hasChannelIdColumn = hasProfileColumns || hasPreviousCurrentProfileColumns || hasPreviousProfileColumns || hasPreviousCurrentColumns || hasExtendedColumns || hasPreviousColumns;
                 var hasProfile = hasChannelIdColumn || isProfileLegacy;
                 var mediaStart = hasProfile ? 8 : 6;
                 SavedChannel? channel = null;
                 var media = new List<SavedMedia>();
                 foreach (var row in rows.Skip(1))
                 {
-                    var expectedColumns = hasProfileColumns ? Header.Length : hasPreviousProfileColumns ? PreviousHeaderWithDuration.Length : hasPreviousCurrentColumns ? PreviousCurrentHeader.Length : hasExtendedColumns ? PreviousExtendedHeader.Length : hasPreviousColumns ? PreviousHeader.Length : isProfileLegacy ? ProfileLegacyHeader.Length : LegacyHeader.Length;
+                    var expectedColumns = hasProfileColumns ? Header.Length : hasPreviousCurrentProfileColumns ? PreviousCurrentProfileHeader.Length : hasPreviousProfileColumns ? PreviousHeaderWithDuration.Length : hasPreviousCurrentColumns ? PreviousCurrentHeader.Length : hasExtendedColumns ? PreviousExtendedHeader.Length : hasPreviousColumns ? PreviousHeader.Length : isProfileLegacy ? ProfileLegacyHeader.Length : LegacyHeader.Length;
                     if (row.Count < expectedColumns && row[0] != "Channel") continue;
                     if (row[0] == "Channel")
                     {
@@ -124,7 +132,7 @@ internal sealed class LocalCsvDatabase : IVodRepository
                     else if (row[0] == "Media")
                     {
                         var mediaPlatform = string.IsNullOrWhiteSpace(row[1]) ? channel?.Platform ?? "" : row[1];
-                        if (hasProfileColumns || hasPreviousProfileColumns)
+                        if (hasProfileColumns || hasPreviousCurrentProfileColumns || hasPreviousProfileColumns)
                         {
                             var vodId = row[8];
                             var title = row[9];
@@ -134,11 +142,12 @@ internal sealed class LocalCsvDatabase : IVodRepository
                             DateTimeOffset? publishedAt = DateTimeOffset.TryParse(row[13], CultureInfo.InvariantCulture, DateTimeStyles.None, out var newDate) ? newDate : null;
                             var position = double.TryParse(row[15], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? seconds : 0;
                             DateTimeOffset? updatedAt = DateTimeOffset.TryParse(row[17], CultureInfo.InvariantCulture, DateTimeStyles.None, out var updated) ? updated : null;
+                            var favorite = hasProfileColumns && row.Count > 20 && bool.TryParse(row[20], out var parsedFavorite) && parsedFavorite;
                             media.Add(new SavedMedia(title, mediaPlatform, NormalizeSourceType(sourceType, onlineUrl, localFilePath),
                                 GetSourceLabel(onlineUrl, localFilePath), onlineUrl ?? localFilePath ?? "", publishedAt,
                                 row[14], NullIfEmpty(row[18]), NullIfEmpty(row[19]), GetAvailability(localFilePath),
                                 onlineUrl, localFilePath, string.IsNullOrWhiteSpace(vodId) ? LibraryTransfer.GetVodId(mediaPlatform, onlineUrl ?? "", localFilePath ?? "", title) : vodId,
-                                position, row[16], updatedAt));
+                                position, row[16], updatedAt, favorite));
                         }
                         else
                         {
@@ -184,13 +193,13 @@ internal sealed class LocalCsvDatabase : IVodRepository
             {
                 WriteRow(writer, Header);
                 WriteRow(writer, ["Channel", channel.Platform, channel.ChannelId, channel.DisplayName, channel.Description,
-                    channel.ChannelUrl, channel.ProfileImageUrl ?? "", channel.ProfileImagePath ?? "", .. EmptyFields(12)]);
+                    channel.ChannelUrl, channel.ProfileImageUrl ?? "", channel.ProfileImagePath ?? "", .. EmptyFields(13)]);
                 foreach (var card in cards.Where(card => card.ChannelUrl == channel.ChannelUrl))
                 {
                     WriteRow(writer, ["Media", "", "", "", "", "", "", "", card.VodId, card.Title, GetPersistedSourceType(card),
                         card.OnlineUrl ?? "", card.LocalFilePath ?? "", card.PublishedAt?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture) ?? "",
                         card.WatchStatusLabel, card.LastPositionSeconds.ToString(CultureInfo.InvariantCulture), card.Memo,
-                        card.UpdatedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture), card.ThumbnailUrl ?? "", card.ThumbnailPath ?? ""]);
+                        card.UpdatedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture), card.ThumbnailUrl ?? "", card.ThumbnailPath ?? "", card.IsFavorite ? "true" : "false"]);
                 }
             }
             File.Move(temporaryPath, path, true);
@@ -219,6 +228,27 @@ internal sealed class LocalCsvDatabase : IVodRepository
             }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    public void DeleteAll()
+    {
+        lock (_saveLock)
+        {
+            // Delete only files recognized as the app's channel records. User-exported CSVs
+            // are not tracked here and must remain untouched, even if stored under db/.
+            _ = LoadAll();
+            foreach (var path in _loadedCsvPaths.Values.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                File.Delete(path);
+                var temporaryPath = path + ".tmp";
+                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            }
+
+            if (Directory.Exists(_thumbnailDirectory))
+                Directory.Delete(_thumbnailDirectory, recursive: true);
+            Directory.CreateDirectory(_thumbnailDirectory);
+            _loadedCsvPaths.Clear();
         }
     }
 

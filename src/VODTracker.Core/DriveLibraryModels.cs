@@ -25,7 +25,8 @@ public sealed record SavedMedia(
     string VodId = "",
     double LastPositionSeconds = 0,
     string Memo = "",
-    DateTimeOffset? UpdatedAt = null);
+    DateTimeOffset? UpdatedAt = null,
+    bool Favorite = false);
 
 public sealed record SavedChannelData(SavedChannel Channel, IReadOnlyList<SavedMedia> Media);
 

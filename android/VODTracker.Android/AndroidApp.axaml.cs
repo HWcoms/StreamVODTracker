@@ -6,6 +6,8 @@ namespace VODTracker.Android;
 
 public sealed partial class AndroidApp : Avalonia.Application
 {
+    internal static AndroidHomeView? MainView { get; private set; }
+
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
     public override void OnFrameworkInitializationCompleted()
@@ -16,7 +18,10 @@ public sealed partial class AndroidApp : Avalonia.Application
             : Avalonia.Styling.ThemeVariant.Light;
 
         if (ApplicationLifetime is ISingleViewApplicationLifetime singleView)
-            singleView.MainView = new AndroidHomeView(settings);
+        {
+            MainView = new AndroidHomeView(settings);
+            singleView.MainView = MainView;
+        }
 
         base.OnFrameworkInitializationCompleted();
     }

@@ -27,9 +27,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, SavedChannelData> _lastSavedDriveSnapshots = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _soopNextPageByChannel = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _soopHasMoreByChannel = new(StringComparer.OrdinalIgnoreCase);
-    private const int InitialCardDisplayLimit = 120;
-    private const int CardDisplayBatchSize = 120;
-    private int _cardDisplayLimit = InitialCardDisplayLimit;
+    private int _cardDisplayLimit = 120;
     private readonly ObservableCollection<ChannelEntry> _channels = [];
     private readonly ObservableCollection<ChannelEntry> _visibleChannels = [];
     private readonly HashSet<string> _selectedChannelUrls = new(StringComparer.OrdinalIgnoreCase);
@@ -62,6 +60,7 @@ public partial class MainWindow : Window
     private ChannelEntry? _selectedChannel;
     private bool _isListView;
     private bool _showThumbnails = true;
+    private bool _showFavoritesOnly;
     private readonly DispatcherTimer _channelStatusTimer = new() { Interval = TimeSpan.FromMinutes(2) };
     private readonly DispatcherTimer _searchDurationRefreshTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
     private readonly DispatcherTimer _refreshNotificationTimer = new() { Interval = TimeSpan.FromSeconds(3) };
@@ -80,6 +79,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         UpdateViewButtonStates();
         _sortDescending = _settingsStore.LoadSortDescending();
+        _cardDisplayLimit = _settingsStore.LoadCardBatchSize();
         UpdateSortDirectionButton();
         SortOrder.SelectedIndex = _settingsStore.LoadSortOrder() switch
         {
@@ -252,17 +252,17 @@ public partial class MainWindow : Window
                 var card = new MediaCard(item.Title, item.Platform, item.SourceType, item.SourceLabel,
                     item.Availability, item.WatchStatus, item.SourceValue, saved.Channel.Url,
                     item.PublishedAt, item.ThumbnailUrl, item.ThumbnailPath, item.OnlineUrl, item.LocalFilePath,
-                    item.VodId, item.LastPositionSeconds, item.Memo, item.UpdatedAt);
+                    item.VodId, item.LastPositionSeconds, item.Memo, item.UpdatedAt, isFavorite: item.Favorite);
                 _allCards.Add(card);
                 if (card.HasLocalFilePath) _ = DetectLocalDurationAsync(card);
-                if (!string.IsNullOrWhiteSpace(item.ThumbnailPath) && File.Exists(item.ThumbnailPath))
+                if (_showThumbnails && !string.IsNullOrWhiteSpace(item.ThumbnailPath) && File.Exists(item.ThumbnailPath))
                 {
                     try { card.SetThumbnail(new Bitmap(item.ThumbnailPath)); }
                     catch (Exception exception) when (exception is IOException or ArgumentException or InvalidOperationException) { }
                 }
-                if (IsHttpUrl(card.OnlineUrl))
+                if (_showThumbnails && IsHttpUrl(card.OnlineUrl))
                     _ = RefreshCardThumbnailAsync(card);
-                else if (!card.HasThumbnail && !string.IsNullOrWhiteSpace(item.ThumbnailUrl))
+                else if (_showThumbnails && !card.HasThumbnail && !string.IsNullOrWhiteSpace(item.ThumbnailUrl))
                 {
                     _ = LoadThumbnailAsync(card, item.ThumbnailUrl);
                 }
@@ -315,7 +315,8 @@ public partial class MainWindow : Window
             card.VodId,
             card.LastPositionSeconds,
             card.Memo,
-            card.UpdatedAt)).ToArray();
+            card.UpdatedAt,
+            card.IsFavorite)).ToArray();
         return NormalizeDriveSnapshot(new SavedChannelData(savedChannel, savedMedia));
     }
 
@@ -402,7 +403,7 @@ public partial class MainWindow : Window
                     return new MediaCard(item.Title, item.Platform, item.SourceType,
                     item.SourceLabel, item.Availability, item.WatchStatus, item.SourceValue, saved.Channel.Url,
                     item.PublishedAt, localItem?.ThumbnailUrl, localItem?.ThumbnailPath, item.OnlineUrl, item.LocalFilePath,
-                    item.VodId, item.LastPositionSeconds, item.Memo, item.UpdatedAt);
+                    item.VodId, item.LastPositionSeconds, item.Memo, item.UpdatedAt, isFavorite: item.Favorite);
                 }).ToArray();
                 _localDatabase.Save(channel, cards);
                 foreach (var card in cards) card.Dispose();
@@ -551,7 +552,7 @@ public partial class MainWindow : Window
             UpdateNavigationSelection(section);
             _isAllLibraryView = true;
             ClearChannelSelection();
-            _cardDisplayLimit = InitialCardDisplayLimit;
+            _cardDisplayLimit = _settingsStore.LoadCardBatchSize();
             foreach (var channel in _channels) channel.IsSelected = false;
             PlatformTabs.SelectedIndex = -1;
             PlatformTabs.IsVisible = true;
@@ -825,7 +826,7 @@ public partial class MainWindow : Window
         _selectedChannel = null;
         foreach (var channel in _channels) channel.IsSelected = false;
         ShowAllChannelsCard.Classes.Set("selected", true);
-        _cardDisplayLimit = InitialCardDisplayLimit;
+        _cardDisplayLimit = _settingsStore.LoadCardBatchSize();
         UpdateCards();
         e.Handled = true;
     }
@@ -942,7 +943,7 @@ public partial class MainWindow : Window
         _selectedChannelUrls.Clear();
         foreach (var channel in _channels) channel.IsSelected = false;
         ShowAllChannelsCard?.Classes.Set("selected", false);
-        _cardDisplayLimit = InitialCardDisplayLimit;
+        _cardDisplayLimit = _settingsStore.LoadCardBatchSize();
     }
 
     private MediaCard? _selectionAnchor;
@@ -1074,7 +1075,7 @@ public partial class MainWindow : Window
             _channelPressedTarget = null;
             e.Pointer.Capture(null);
             ChannelSelectionRectangle.IsVisible = false;
-            _cardDisplayLimit = InitialCardDisplayLimit;
+            _cardDisplayLimit = _settingsStore.LoadCardBatchSize();
             ShowAllChannelsCard.Classes.Set("selected", false);
             UpdateCards();
             if (!wasLasso && pressedChannel is not null && _selectedChannelUrls.Contains(pressedChannel.ChannelUrl))
@@ -1481,7 +1482,17 @@ public partial class MainWindow : Window
     private void ThumbnailView_Click(object? sender, RoutedEventArgs e)
     {
         _showThumbnails = !_showThumbnails;
-        foreach (var card in _allCards) card.ShowThumbnails = _showThumbnails;
+        foreach (var card in _allCards)
+        {
+            card.ShowThumbnails = _showThumbnails;
+            if (!_showThumbnails)
+            {
+                card.CancelThumbnailRequest();
+                continue;
+            }
+            if (!card.HasThumbnail && IsHttpUrl(card.OnlineUrl)) _ = RefreshCardThumbnailAsync(card);
+            else if (!card.HasThumbnail && !string.IsNullOrWhiteSpace(card.ThumbnailUrl)) _ = LoadThumbnailAsync(card, card.ThumbnailUrl);
+        }
         UpdateViewButtonStates();
     }
 
@@ -1493,6 +1504,23 @@ public partial class MainWindow : Window
         ToolTip.SetTip(ThumbnailViewButton, _showThumbnails ? "썸네일 숨기기" : "썸네일 표시");
         ToolTip.SetTip(GridViewButton, _isListView ? "그리드 보기" : "현재 그리드 보기");
         ToolTip.SetTip(ListViewButton, _isListView ? "현재 리스트 보기" : "리스트 보기");
+    }
+
+    private void FavoriteFilter_Click(object? sender, RoutedEventArgs e)
+    {
+        _showFavoritesOnly = !_showFavoritesOnly;
+        FavoriteFilterButton.Content = _showFavoritesOnly ? "★" : "☆";
+        FavoriteFilterButton.Foreground = new SolidColorBrush(Color.Parse(_showFavoritesOnly ? "#F4C542" : "#9699A6"));
+        UpdateCards();
+    }
+
+    private void FavoriteCard_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { DataContext: MediaCard card }) return;
+        card.ToggleFavorite();
+        if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } channel)
+            SaveChannel(channel);
+        UpdateCards();
     }
 
     private void WatchStatus_Click(object? sender, RoutedEventArgs e)
@@ -2200,23 +2228,28 @@ public partial class MainWindow : Window
 
     private async Task<bool> LoadThumbnailAsync(MediaCard card, string? thumbnailUrl)
     {
-        if (string.IsNullOrWhiteSpace(thumbnailUrl)) return false;
+        if (!card.ShowThumbnails || string.IsNullOrWhiteSpace(thumbnailUrl)) return false;
         var normalizedUrl = thumbnailUrl.StartsWith("//", StringComparison.Ordinal) ? $"https:{thumbnailUrl}" : thumbnailUrl;
         if (!Uri.TryCreate(normalizedUrl, UriKind.Absolute, out var uri) ||
             (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)) return false;
 
-        await ThumbnailLoadLimiter.WaitAsync();
+        using var requestCancellation = new CancellationTokenSource();
+        card.SetThumbnailRequest(requestCancellation);
+        var enteredLimiter = false;
         try
         {
+            await ThumbnailLoadLimiter.WaitAsync(requestCancellation.Token);
+            enteredLimiter = true;
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
             request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
             if (card.PlatformLabel == "SOOP")
                 request.Headers.Referrer = Uri.TryCreate(card.OnlineUrl, UriKind.Absolute, out var vodUri)
                     ? vodUri : new Uri("https://www.sooplive.com/");
-            using var response = await client.SendAsync(request);
+            using var response = await client.SendAsync(request, requestCancellation.Token);
             response.EnsureSuccessStatusCode();
-            var bytes = await response.Content.ReadAsByteArrayAsync();
+            var bytes = await response.Content.ReadAsByteArrayAsync(requestCancellation.Token);
+            if (!card.ShowThumbnails || requestCancellation.IsCancellationRequested) return false;
             using var stream = new MemoryStream(bytes);
             var bitmap = new Bitmap(stream);
             if (card.ChannelUrl is not null && _channels.FirstOrDefault(channel => channel.ChannelUrl == card.ChannelUrl) is { } ownerChannel)
@@ -2230,31 +2263,33 @@ public partial class MainWindow : Window
                 SaveChannel(owner);
             return true;
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException or ArgumentException)
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or IOException or InvalidOperationException or ArgumentException or OperationCanceledException)
         {
             // Keep the already loaded cached thumbnail if the online image cannot be loaded.
             return false;
         }
         finally
         {
-            ThumbnailLoadLimiter.Release();
+            if (enteredLimiter) ThumbnailLoadLimiter.Release();
+            card.ClearThumbnailRequest(requestCancellation);
         }
     }
 
     private async Task RefreshCardThumbnailAsync(MediaCard card, string? refreshedThumbnailUrl = null)
     {
-        if (!IsHttpUrl(card.OnlineUrl)) return;
+        if (!card.ShowThumbnails || !IsHttpUrl(card.OnlineUrl)) return;
 
         if (!string.IsNullOrWhiteSpace(refreshedThumbnailUrl))
             card.UpdateThumbnailUrl(refreshedThumbnailUrl);
 
         var currentThumbnailUrl = card.ThumbnailUrl;
         if (!string.IsNullOrWhiteSpace(currentThumbnailUrl) && await LoadThumbnailAsync(card, currentThumbnailUrl)) return;
+        if (!card.ShowThumbnails) return;
 
         var fallbackUrl = card.PlatformLabel == "SOOP"
             ? await FetchSoopVodThumbnailUrlAsync(card.OnlineUrl!)
             : await FetchPageThumbnailUrlAsync(card.OnlineUrl!);
-        if (!string.IsNullOrWhiteSpace(fallbackUrl) && !string.Equals(fallbackUrl, currentThumbnailUrl, StringComparison.OrdinalIgnoreCase))
+        if (card.ShowThumbnails && !string.IsNullOrWhiteSpace(fallbackUrl) && !string.Equals(fallbackUrl, currentThumbnailUrl, StringComparison.OrdinalIgnoreCase))
         {
             card.UpdateThumbnailUrl(fallbackUrl);
             await LoadThumbnailAsync(card, fallbackUrl);
@@ -2420,7 +2455,7 @@ public partial class MainWindow : Window
         if (remaining > 160) return;
         if (_visibleCards.Count < _filteredCards.Count)
         {
-            _cardDisplayLimit += CardDisplayBatchSize;
+            _cardDisplayLimit += _settingsStore.LoadCardBatchSize();
             UpdateCards();
             Dispatcher.UIThread.Post(RefreshUnknownVisibleCardDurations, DispatcherPriority.Background);
             return;
@@ -3169,6 +3204,89 @@ public partial class MainWindow : Window
             await ShowTransferMessageAsync("Export failed", exception.Message);
         }
     }
+
+    private async void DeleteAllLibrary_Click(object? sender, RoutedEventArgs e)
+    {
+        var confirmation = new Window
+        {
+            Title = "모든 채널 및 기록 삭제",
+            Width = 440,
+            Height = 220,
+            MinWidth = 440,
+            MinHeight = 220,
+            MaxWidth = 440,
+            MaxHeight = 220,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
+        var cancelButton = new Button { Content = "취소", MinWidth = 88, IsCancel = true };
+        var confirmButton = new Button
+        {
+            Content = "확인",
+            MinWidth = 88,
+            IsDefault = true,
+            Background = new SolidColorBrush(Color.Parse("#D84040")),
+            Foreground = Brushes.White,
+            BorderBrush = new SolidColorBrush(Color.Parse("#D84040"))
+        };
+        cancelButton.Click += (_, _) => confirmation.Close(false);
+        confirmButton.Click += (_, _) => confirmation.Close(true);
+        confirmation.Content = new StackPanel
+        {
+            Margin = new Thickness(22),
+            Spacing = 20,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "저장된 채널 및 VOD 시청 기록이 전부 삭제 됩니다.",
+                    TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                    VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                },
+                new StackPanel
+                {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                    Spacing = 8,
+                    Children = { cancelButton, confirmButton }
+                }
+            }
+        };
+        if (await confirmation.ShowDialog<bool>(this) != true) return;
+
+        try
+        {
+            _driveUploadTimer.Stop();
+            _driveUploadPending = false;
+            _localDatabase.DeleteAll();
+            foreach (var channel in _channels) channel.Dispose();
+            foreach (var card in _allCards) card.Dispose();
+            _channels.Clear();
+            _allCards.Clear();
+            _visibleChannels.Clear();
+            _visibleCards.Clear();
+            _filteredCards.Clear();
+            _selectedChannelUrls.Clear();
+            _selectedChannel = null;
+            _channelSelectionAnchor = null;
+            _selectionAnchor = null;
+            _soopNextPageByChannel.Clear();
+            _soopHasMoreByChannel.Clear();
+            _lastSavedDriveSnapshots.Clear();
+            _isAllLibraryView = true;
+            _isShowAllChannels = true;
+            UpdateNavigationSelection("all");
+            ChannelEmptyState.IsVisible = true;
+            ChannelScroller.IsVisible = false;
+            UpdateCards();
+            UpdateVisibleChannels();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            await ShowTransferMessageAsync("기록 삭제 실패", exception.Message);
+        }
+    }
+
     private async void ImportCsv_Click(object? sender, RoutedEventArgs e)
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
@@ -3211,6 +3329,7 @@ public partial class MainWindow : Window
                 if (existing is not null)
                 {
                     existing.UpdateDetails(row.Title, row.PublishedAt, row.Url, row.LocalFilePath, row.VodId);
+                    existing.IsFavorite = row.Favorite ?? existing.IsFavorite;
                     // Existing watch state is user data; imports leave it untouched.
                 }
                 else
@@ -3222,7 +3341,8 @@ public partial class MainWindow : Window
                         row.LocalFilePath.Length > 0 ? File.Exists(row.LocalFilePath) ? "파일 확인됨" : "파일 확인 필요" : "링크 사용 가능",
                         row.WatchStatus, source, channel.ChannelUrl, row.PublishedAt, onlineUrl: row.Url, localFilePath: row.LocalFilePath,
                         vodId: row.VodId, lastPositionSeconds: row.LastPositionSeconds, memo: row.Memo,
-                        updatedAt: DateTimeOffset.TryParse(row.UpdatedAt, out var importedUpdated) ? importedUpdated : DateTimeOffset.UtcNow));
+                        updatedAt: DateTimeOffset.TryParse(row.UpdatedAt, out var importedUpdated) ? importedUpdated : DateTimeOffset.UtcNow,
+                        isFavorite: row.Favorite ?? false));
                     added++;
                 }
                 SaveChannel(channel);
@@ -3429,6 +3549,7 @@ public partial class MainWindow : Window
             3 => "시청완료",
             _ => ""
         }));
+        if (_showFavoritesOnly) filtered = filtered.Where(card => card.IsFavorite);
         filtered = SortOrder?.SelectedIndex switch
         {
             1 => _sortDescending
@@ -3483,6 +3604,7 @@ public partial class MainWindow : Window
         DirectAddButton.IsVisible = true;
         DirectAddButton.IsEnabled = hasSingleChannelContext;
         ThumbnailViewButton.IsVisible = hasChannelScope;
+        FavoriteFilterButton.IsVisible = hasChannelScope;
         GridViewButton.IsVisible = hasChannelScope;
         ListViewButton.IsVisible = hasChannelScope;
         ShowAllChannelsCard.Classes.Set("selected", _isShowAllChannels);
@@ -3533,13 +3655,15 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     private string _lastPositionMinutes = "00";
     private string _lastPositionRemainderSeconds = "00";
     private DateTimeOffset _updatedAt;
+    private bool _isFavorite;
+    private CancellationTokenSource? _thumbnailRequest;
 
     public MediaCard(string title, string platformLabel, string sourceTypeLabel, string sourceLabel,
         string availabilityLabel, string watchStatusLabel, string sourceValue, string? channelUrl = null,
         DateTimeOffset? publishedAt = null, string? thumbnailUrl = null, string? thumbnailPath = null,
         string? onlineUrl = null, string? localFilePath = null, string? vodId = null,
         double lastPositionSeconds = 0, string? memo = null, DateTimeOffset? updatedAt = null,
-        double? durationSeconds = null)
+        double? durationSeconds = null, bool isFavorite = false)
     {
         _title = title;
         PlatformLabel = platformLabel;
@@ -3560,6 +3684,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         _durationSeconds = durationSeconds > 0 ? durationSeconds : null;
         _memo = memo ?? "";
         _updatedAt = updatedAt ?? DateTimeOffset.UtcNow;
+        _isFavorite = isFavorite;
         RefreshSourceLabels();
     }
 
@@ -3604,6 +3729,22 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public string LastPositionRemainderSeconds { get => _lastPositionRemainderSeconds; set => SetLastPositionPart("seconds", value); }
     public bool IsLastPositionVisible => WatchStatusLabel == "시청중";
     public string Memo => _memo;
+    public bool IsFavorite
+    {
+        get => _isFavorite;
+        set
+        {
+            if (_isFavorite == value) return;
+            _isFavorite = value;
+            _updatedAt = DateTimeOffset.UtcNow;
+            OnPropertyChanged(nameof(IsFavorite));
+            OnPropertyChanged(nameof(FavoriteGlyph));
+            OnPropertyChanged(nameof(FavoriteForeground));
+            OnPropertyChanged(nameof(UpdatedAt));
+        }
+    }
+    public string FavoriteGlyph => IsFavorite ? "★" : "☆";
+    public IBrush FavoriteForeground => new SolidColorBrush(Color.Parse(IsFavorite ? "#F4C542" : "#9699A6"));
     public string MemoOverlayText => string.IsNullOrWhiteSpace(_memo) ? "메모하기" : _memo;
     public IBrush MemoIconForeground => new SolidColorBrush(Color.Parse(string.IsNullOrWhiteSpace(_memo) ? "#85899B" : "#7156E8"));
     public void SetMemo(string memo)
@@ -3736,6 +3877,21 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         ThumbnailUrl = thumbnailUrl;
         OnPropertyChanged(nameof(ThumbnailUrl));
     }
+
+    public void SetThumbnailRequest(CancellationTokenSource cancellation)
+    {
+        _thumbnailRequest?.Cancel();
+        _thumbnailRequest = cancellation;
+    }
+
+    public void ClearThumbnailRequest(CancellationTokenSource cancellation)
+    {
+        if (ReferenceEquals(_thumbnailRequest, cancellation)) _thumbnailRequest = null;
+    }
+
+    public void CancelThumbnailRequest() => _thumbnailRequest?.Cancel();
+
+    public void ToggleFavorite() => IsFavorite = !IsFavorite;
 
     public bool IsSelected
     {
@@ -3870,7 +4026,11 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         _lastPositionRemainderSeconds = time.Seconds.ToString("00");
     }
     private void OnPropertyChanged(string propertyName) => PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
-    public void Dispose() => _thumbnail?.Dispose();
+    public void Dispose()
+    {
+        CancelThumbnailRequest();
+        _thumbnail?.Dispose();
+    }
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
 }
 

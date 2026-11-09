@@ -8,7 +8,7 @@
         Title="VOD Tracker" Width="1280" Height="820" MinWidth="980" MinHeight="640"
         Background="{DynamicResource AppBackgroundBrush}">
     <Window.Icon>
-        <WindowIcon>/Assets/app-icon.ico</WindowIcon>
+        <WindowIcon>/Assets/app_icon.png</WindowIcon>
     </Window.Icon>
     <Window.Resources>
         <SolidColorBrush x:Key="AppBackgroundBrush" Color="#F5F6FA" />
@@ -75,6 +75,9 @@
                     </Button>
                     <Button Classes="nav" Click="ExportCsv_Click">
                         <StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="↑"/><TextBlock Text="CSV 내보내기"/></StackPanel>
+                    </Button>
+                    <Button Classes="nav" Foreground="#FF7777" Click="DeleteAllLibrary_Click">
+                        <StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="🗑" Foreground="#FF7777"/><TextBlock Text="모든 채널 및 기록 삭제" Foreground="#FF7777" TextWrapping="Wrap"/></StackPanel>
                     </Button>
                 </StackPanel>
 
@@ -240,6 +243,9 @@
                                             </Grid>
                                         </Border>
                                     </Button>
+                                    <Button x:Name="FavoriteFilterButton" Content="☆" Width="42" Height="42" Padding="0" Classes="view-toggle"
+                                            FontSize="22" Foreground="#9699A6" HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
+                                            Click="FavoriteFilter_Click" IsVisible="False" ToolTip.Tip="&#xC990;&#xACA8;&#xCC3E;&#xAE30;&#xD55C; VOD&#xB9CC; &#xBCF4;&#xAE30;" />
                                     <Button x:Name="GridViewButton" Width="42" Height="42" Padding="0" Classes="view-toggle"
                                             HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                                             Click="GridView_Click" IsVisible="False" ToolTip.Tip="그리드 보기">

@@ -29,6 +29,14 @@ public sealed class AppSettingsStore
 
     public void SaveSortDescending(bool descending) => SaveValue("Library", "SortDescending", descending.ToString());
 
+    public int LoadCardBatchSize()
+    {
+        var size = int.TryParse(LoadValue("Library", "CardBatchSize"), out var value) ? value : 120;
+        return Math.Clamp(size, 20, 1000);
+    }
+
+    public void SaveCardBatchSize(int size) => SaveValue("Library", "CardBatchSize", Math.Clamp(size, 20, 1000).ToString());
+
     public void SaveIsDarkTheme(bool isDark) => SaveValue("Appearance", "Theme", isDark ? "Dark" : "Light");
 
     public string LoadGoogleOAuthClientId() => LoadValue("GoogleDrive", "OAuthClientId") ?? "";
