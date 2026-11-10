@@ -11,11 +11,18 @@ internal sealed class AndroidLibraryStore
     private readonly object _saveQueueLock = new();
     private Task _pendingSave = Task.CompletedTask;
     private IReadOnlyList<SavedChannelData>? _cachedChannels;
+    public event Action? LibraryChanged;
 
     public AndroidLibraryStore()
     {
         var filesDirectory = global::Android.App.Application.Context.FilesDir!.AbsolutePath!;
         _path = Path.Combine(filesDirectory, "vod-library.json");
+        var oldThumbnailCache = Path.Combine(filesDirectory, "media-thumbnails");
+        try
+        {
+            if (Directory.Exists(oldThumbnailCache)) Directory.Delete(oldThumbnailCache, recursive: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
     }
 
     public IReadOnlyList<SavedChannelData> LoadAll()
@@ -88,7 +95,17 @@ internal sealed class AndroidLibraryStore
 
         _cachedChannels = channels.Values.ToArray();
         QueueSave(_cachedChannels);
+        LibraryChanged?.Invoke();
         return added;
+    }
+
+    public async Task ReplaceFromDriveAsync(IEnumerable<SavedChannelData> channels)
+    {
+        _cachedChannels = channels.ToArray();
+        QueueSave(_cachedChannels);
+        Task save;
+        lock (_saveQueueLock) save = _pendingSave;
+        await save;
     }
 
     public void Export(Stream stream) => LibraryTransfer.ExportCsv(stream, LoadAll());
@@ -110,7 +127,12 @@ internal sealed class AndroidLibraryStore
                     if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
                 }
             }), CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
-            return _pendingSave;
+            var deleteTask = _pendingSave;
+            return deleteTask.ContinueWith(task =>
+            {
+                if (task.IsCompletedSuccessfully) LibraryChanged?.Invoke();
+                return task;
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default).Unwrap();
         }
     }
 
@@ -120,19 +142,6 @@ internal sealed class AndroidLibraryStore
         Directory.CreateDirectory(directory);
         var key = Encoding.UTF8.GetBytes($"{LibraryTransfer.NormalizePlatform(platform)}:{channelId}");
         return Path.Combine(directory, Convert.ToHexString(SHA256.HashData(key)) + ".img");
-    }
-
-    public string GetMediaThumbnailPath(string imageUrl)
-    {
-        var directory = Path.Combine(global::Android.App.Application.Context.FilesDir!.AbsolutePath!, "media-thumbnails");
-        Directory.CreateDirectory(directory);
-        return Path.Combine(directory, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(imageUrl))) + ".img");
-    }
-
-    public void InvalidateMediaThumbnailCache(string imageUrl)
-    {
-        var path = GetMediaThumbnailPath(imageUrl);
-        if (File.Exists(path)) File.Delete(path);
     }
 
     public void UpdateChannelProfile(string platform, string channelId, string name, string description, string? imageUrl, string? imagePath)
@@ -199,6 +208,7 @@ internal sealed class AndroidLibraryStore
     {
         _cachedChannels = channels.ToArray();
         QueueSave(_cachedChannels);
+        LibraryChanged?.Invoke();
     }
 
     private void QueueSave(IReadOnlyList<SavedChannelData> snapshot)

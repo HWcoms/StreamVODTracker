@@ -17,9 +17,13 @@ namespace VODTracker.Android;
 
 internal sealed class AndroidHomeView : UserControl
 {
+    private const string WatchStatusUnwatched = "\uBBF8\uC2DC\uCCAD";
+    private const string WatchStatusWatching = "\uC2DC\uCCAD\uC911";
+    private const string WatchStatusCompleted = "\uC2DC\uCCAD\uC644\uB8CC";
     private static bool _isDarkTheme;
     private readonly AndroidSettingsStore _settings;
     private readonly AndroidLibraryStore _libraryStore = new();
+    private readonly AndroidDriveSyncService _driveSyncService;
     private readonly ContentControl _pageHost = new() { Background = Brush("#F5F6FA") };
     private readonly TextBlock _pageTitle = new();
     private Button? _channelBackButton;
@@ -27,6 +31,8 @@ internal sealed class AndroidHomeView : UserControl
     private Grid? _header;
     private Border? _headerBorder;
     private Grid? _drawerOverlay;
+    private Border? _appNotification;
+    private TextBlock? _appNotificationText;
     private Button? _drawerThemeButton;
     private Button? _drawerSettingsButton;
     private Button? _headerThemeButton;
@@ -39,19 +45,29 @@ internal sealed class AndroidHomeView : UserControl
     private ScrollViewer? _pullRefreshScrollViewer;
     private Point? _pullRefreshStart;
     private IPointer? _pullRefreshPointer;
+    private bool _isPullRefreshGestureActive;
     private Border? _pullRefreshIndicator;
     private Grid? _pullRefreshIcon;
-    private Ellipse? _pullRefreshSpinnerDot;
     private double _pullRefreshDistance;
     private bool _isRefreshingChannelVods;
     private int _channelVodsRefreshGeneration;
     private Func<bool, Task>? _refreshCurrentChannelVods;
     private readonly DispatcherTimer _pullRefreshSpinnerTimer = new() { Interval = TimeSpan.FromMilliseconds(65) };
+    private readonly DispatcherTimer _appNotificationTimer = new() { Interval = TimeSpan.FromSeconds(4) };
+    private readonly DispatcherTimer _driveUploadTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer _driveCheckTimer = new() { Interval = TimeSpan.FromSeconds(90) };
     private double _pullRefreshSpinnerAngle;
+    private bool _isDriveSyncing;
+    private bool _driveStartupSyncStarted;
+    private bool _driveUploadPending;
+    private bool _driveSyncRetryPending;
+    private bool _isViewAttached;
     private string _selectedSection = "all";
     private string? _selectedChannelKey;
     private bool _isSettingsActive;
+    private bool _isMemoEditorActive;
     private bool _showThumbnails = true;
+    private bool _isLandscapeLayout;
     private bool _showFavoritesOnly;
     private readonly Dictionary<string, Button> _drawerItems = new(StringComparer.Ordinal);
     private readonly List<(string SearchText, Control View)> _channelSearchItems = [];
@@ -64,6 +80,8 @@ internal sealed class AndroidHomeView : UserControl
     public AndroidHomeView(AndroidSettingsStore settings)
     {
         _settings = settings;
+        _driveSyncService = new AndroidDriveSyncService(_libraryStore, settings);
+        _driveCheckTimer.Interval = TimeSpan.FromSeconds(_settings.LoadDriveCheckIntervalSeconds());
         _isDarkTheme = settings.LoadIsDarkTheme();
         ApplyThemeColors();
         _pageTitle.FontSize = 23;
@@ -113,7 +131,7 @@ internal sealed class AndroidHomeView : UserControl
         menuButton.Click += (_, _) => SetDrawerOpen(!(_drawerOverlay?.IsVisible ?? false));
         var headerThemeButton = new Button
         {
-            Content = _isDarkTheme ? "☀" : "☾",
+            Content = BuildThemeIcon(_isDarkTheme),
             FontSize = 21,
             Width = 42,
             Height = 42,
@@ -129,7 +147,7 @@ internal sealed class AndroidHomeView : UserControl
         _headerThemeButton = headerThemeButton;
         var settingsButton = new Button
         {
-            Content = "⚙",
+            Content = BuildSettingsIcon(),
             FontSize = 21,
             Width = 42,
             Height = 42,
@@ -203,6 +221,7 @@ internal sealed class AndroidHomeView : UserControl
 
         _root.RowDefinitions = new RowDefinitions("Auto,Auto,*");
         _root.Background = Brush("#F5F6FA");
+        _root.ClipToBounds = true;
         _root.Children.Add(headerBorder);
         _root.Children.Add(titleBorder);
         _root.Children.Add(_pageHost);
@@ -210,6 +229,36 @@ internal sealed class AndroidHomeView : UserControl
         Grid.SetRowSpan(_drawerOverlay, 3);
         _drawerOverlay.ZIndex = 10;
         _root.Children.Add(_drawerOverlay);
+        _appNotificationText = new TextBlock
+        {
+            Foreground = Brushes.White,
+            FontSize = 13,
+            FontWeight = FontWeight.SemiBold,
+            TextWrapping = TextWrapping.Wrap
+        };
+        _appNotification = new Border
+        {
+            Background = Brush("#252836"),
+            BorderBrush = Brush("#35B879"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(16, 11),
+            Margin = new Thickness(12, 0, 12, 16),
+            MaxWidth = 360,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            IsVisible = false,
+            IsHitTestVisible = false,
+            Child = _appNotificationText
+        };
+        Grid.SetRowSpan(_appNotification, 3);
+        _appNotification.ZIndex = 20;
+        _root.Children.Add(_appNotification);
+        _appNotificationTimer.Tick += (_, _) =>
+        {
+            _appNotificationTimer.Stop();
+            if (_appNotification is not null) _appNotification.IsVisible = false;
+        };
         _pullRefreshSpinnerTimer.Tick += (_, _) =>
         {
             _pullRefreshSpinnerAngle = (_pullRefreshSpinnerAngle + 25) % 360;
@@ -219,6 +268,35 @@ internal sealed class AndroidHomeView : UserControl
         _root.PointerPressed += Root_PointerPressed;
         _root.AddHandler(InputElement.PointerMovedEvent, Root_PointerMoved, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
         _root.AddHandler(InputElement.PointerReleasedEvent, Root_PointerReleased, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
+        _libraryStore.LibraryChanged += ScheduleDriveUpload;
+        _driveUploadTimer.Tick += (_, _) =>
+        {
+            _driveUploadTimer.Stop();
+            _ = RunDriveSyncAsync(connectFirst: false, quiet: true);
+        };
+        _driveCheckTimer.Tick += (_, _) =>
+        {
+            if (_driveSyncRetryPending || _driveUploadPending)
+                _ = RunDriveSyncAsync(connectFirst: false, quiet: true);
+            else
+                _ = CheckDriveForChangesAsync();
+        };
+        AttachedToVisualTree += (_, _) =>
+        {
+            _isViewAttached = true;
+            _driveCheckTimer.Start();
+            if (!_driveStartupSyncStarted && !string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail()))
+            {
+                _driveStartupSyncStarted = true;
+                Dispatcher.UIThread.Post(() => _ = RunDriveSyncAsync(connectFirst: false, quiet: true, refreshUiOnSuccess: true));
+            }
+        };
+        DetachedFromVisualTree += (_, _) =>
+        {
+            _isViewAttached = false;
+            _driveCheckTimer.Stop();
+            _driveUploadTimer.Stop();
+        };
         Content = _root;
         Grid.SetRow(_pageHost, 2);
 
@@ -233,6 +311,7 @@ internal sealed class AndroidHomeView : UserControl
         _pullRefreshScrollViewer = null;
         _pullRefreshStart = null;
         _pullRefreshPointer = null;
+        _isPullRefreshGestureActive = false;
         _pullRefreshIndicator = null;
         _pullRefreshIcon = null;
         _pullRefreshDistance = 0;
@@ -430,21 +509,14 @@ internal sealed class AndroidHomeView : UserControl
         return button;
     }
 
-    private Control BuildChannelDetails(SavedChannelData data)
+    private Control BuildChannelDetails(SavedChannelData data, bool autoRefreshOnOpen = true)
     {
         var platform = LibraryTransfer.NormalizePlatform(data.Channel.Platform);
         var platformName = platform == "SOOP" ? "SOOP" : "치지직";
         var accent = platform == "SOOP" ? "#398FE0" : "#35B879";
         var content = new StackPanel { Spacing = 14 };
-        var pullRefreshDot = new Ellipse
-        {
-            Width = 6,
-            Height = 6,
-            Fill = Brush("#777B8B"),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(0, 1, 0, 0)
-        };
+        var spinnerStart = platform == "SOOP" ? "#14539B" : "#14784A";
+        var spinnerEnd = platform == "SOOP" ? "#59C5FF" : "#62E39A";
         var pullRefreshIcon = new Grid
         {
             Width = 24,
@@ -459,12 +531,20 @@ internal sealed class AndroidHomeView : UserControl
                 {
                     Width = 22,
                     Height = 22,
-                    Stroke = Brush("#D9DCE5"),
-                    StrokeThickness = 3,
+                    Stroke = new LinearGradientBrush
+                    {
+                        StartPoint = new RelativePoint(0, 0, RelativeUnit.Relative),
+                        EndPoint = new RelativePoint(1, 1, RelativeUnit.Relative),
+                        GradientStops =
+                        {
+                            new GradientStop(Color.Parse(spinnerStart), 0),
+                            new GradientStop(Color.Parse(spinnerEnd), 1)
+                        }
+                    },
+                    StrokeThickness = 4,
                     HorizontalAlignment = HorizontalAlignment.Center,
                     VerticalAlignment = VerticalAlignment.Center
-                },
-                pullRefreshDot
+                }
             }
         };
         var pullRefreshIndicator = new Border
@@ -484,7 +564,6 @@ internal sealed class AndroidHomeView : UserControl
         };
         _pullRefreshIndicator = pullRefreshIndicator;
         _pullRefreshIcon = pullRefreshIcon;
-        _pullRefreshSpinnerDot = pullRefreshDot;
 
         var avatarInitial = new TextBlock
         {
@@ -576,7 +655,7 @@ internal sealed class AndroidHomeView : UserControl
         {
             MinHeight = 40,
             SelectedIndex = 0,
-            ItemsSource = new[] { "\uC804\uCCB4 \uC0C1\uD0DC", "\uBBF8\uC2DC\uCCAD", "\uC2DC\uCCAD \uC911", "\uC2DC\uCCAD \uC644\uB8CC" }
+            ItemsSource = new[] { "\uC804\uCCB4 \uC0C1\uD0DC", WatchStatusUnwatched, WatchStatusWatching, WatchStatusCompleted }
         };
         var sortOrder = new ComboBox
         {
@@ -655,7 +734,7 @@ internal sealed class AndroidHomeView : UserControl
             var filteredItems = currentChannelData.Media
                 .Where(item => (query.Length == 0 || item.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase)) &&
                     (!_showFavoritesOnly || item.Favorite) &&
-                    (selectedStatusIndex == 0 || (string.IsNullOrWhiteSpace(item.WatchStatus) ? "\uBBF8\uC2DC\uCCAD" : item.WatchStatus) == selectedStatus))
+                    (selectedStatusIndex == 0 || NormalizeWatchStatus(item.WatchStatus) == selectedStatus))
                 .ToArray();
             var mediaItems = sortOrder.SelectedIndex switch
             {
@@ -706,6 +785,8 @@ internal sealed class AndroidHomeView : UserControl
         statusFilter.SelectionChanged += (_, _) => { _loadMoreMediaCards = null; RefreshMediaList(); };
         sortOrder.SelectionChanged += (_, _) => { _loadMoreMediaCards = null; RefreshMediaList(); };
         content.Children.Add(mediaList);
+        content.Children.Add(new Border { Height = 72 });
+        _isLandscapeLayout = _root.Bounds.Width > _root.Bounds.Height;
         RefreshMediaList();
 
         var pinnedControls = new StackPanel
@@ -714,16 +795,32 @@ internal sealed class AndroidHomeView : UserControl
             Margin = new Thickness(12, 8, 12, 0),
             Children = { search, filters }
         };
+        content.MinWidth = 0;
+        content.HorizontalAlignment = HorizontalAlignment.Stretch;
+        content.Margin = new Thickness(12, 8, 12, 0);
         var mediaScrollViewer = new ScrollViewer
         {
             Content = content,
             Background = Brush("#F5F6FA"),
-            Padding = new Thickness(12, 8, 12, 20),
-            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ClipToBounds = true
         };
         _activePageScrollViewer = mediaScrollViewer;
+        mediaScrollViewer.SizeChanged += (_, e) =>
+        {
+            var isLandscape = e.NewSize.Width > e.NewSize.Height;
+            if (_isLandscapeLayout == isLandscape) return;
+            _isLandscapeLayout = isLandscape;
+            _loadMoreMediaCards = null;
+            RefreshMediaList();
+        };
         mediaScrollViewer.ScrollChanged += (_, e) =>
         {
+            if (_isPullRefreshGestureActive && ReferenceEquals(_pullRefreshScrollViewer, mediaScrollViewer) &&
+                mediaScrollViewer.Offset.Y > 0.5)
+                mediaScrollViewer.Offset = new Vector(mediaScrollViewer.Offset.X, 0);
             ScheduleRefreshVisibleMediaCards();
             if (e.OffsetDelta.Y > 0 && _loadMoreMediaCards is not null &&
                 mediaScrollViewer.Extent.Height - mediaScrollViewer.Offset.Y - mediaScrollViewer.Viewport.Height < 240)
@@ -747,34 +844,53 @@ internal sealed class AndroidHomeView : UserControl
             _pullRefreshScrollViewer = null;
             _pullRefreshStart = null;
             _pullRefreshPointer = null;
+            _isPullRefreshGestureActive = false;
             if (_isRefreshingChannelVods || mediaScrollViewer.Offset.Y > 0.5) return;
             _pullRefreshScrollViewer = mediaScrollViewer;
-            _pullRefreshStart = e.GetPosition(mediaScrollViewer);
+            _pullRefreshStart = e.GetPosition(_root);
             _pullRefreshPointer = e.Pointer;
         }, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
         mediaScrollViewer.AddHandler(InputElement.PointerMovedEvent, (_, e) =>
         {
             if (_pullRefreshPointer is null || !ReferenceEquals(e.Pointer, _pullRefreshPointer) ||
                 _pullRefreshStart is not { } start) return;
-            var distance = Math.Clamp(e.GetPosition(mediaScrollViewer).Y - start.Y, 0, 76);
+            var rawDistance = e.GetPosition(_root).Y - start.Y;
+            if (!_isPullRefreshGestureActive)
+            {
+                // An upward swipe at the top is ordinary list scrolling. Only claim
+                // the pointer after a deliberate downward pull begins.
+                if (rawDistance < -8)
+                {
+                    _pullRefreshPointer = null;
+                    _pullRefreshStart = null;
+                    _pullRefreshScrollViewer = null;
+                    return;
+                }
+                if (rawDistance <= 8) return;
+                _isPullRefreshGestureActive = true;
+                e.Pointer.Capture(mediaScrollViewer);
+            }
+            var distance = Math.Clamp(rawDistance, 0, 76);
             SetPullRefreshIndicatorPosition(distance, visible: true);
-            pullRefreshDot.Fill = Brush(distance >= 76 ? "#7C5CFC" : "#777B8B");
+            e.Handled = true;
         }, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
         mediaScrollViewer.AddHandler(InputElement.PointerReleasedEvent, (_, e) =>
         {
             if (_pullRefreshPointer is null || !ReferenceEquals(e.Pointer, _pullRefreshPointer) ||
                 _pullRefreshStart is not { } start) return;
-            var distance = e.GetPosition(mediaScrollViewer).Y - start.Y;
-            var shouldRefresh = mediaScrollViewer.Offset.Y <= 0.5 && distance >= 76;
+            var distance = e.GetPosition(_root).Y - start.Y;
+            var wasPullGestureActive = _isPullRefreshGestureActive;
+            var shouldRefresh = wasPullGestureActive && mediaScrollViewer.Offset.Y <= 0.5 && distance >= 76;
             _pullRefreshPointer = null;
             _pullRefreshStart = null;
             _pullRefreshScrollViewer = null;
+            _isPullRefreshGestureActive = false;
+            if (wasPullGestureActive) e.Pointer.Capture(null);
             if (shouldRefresh && _refreshCurrentChannelVods is { } refresh)
                 _ = refresh(true);
             else
             {
-                SetPullRefreshIndicatorPosition(0);
-                pullRefreshDot.Fill = Brush("#777B8B");
+                if (wasPullGestureActive) SetPullRefreshIndicatorPosition(0);
             }
         }, Avalonia.Interactivity.RoutingStrategies.Bubble, handledEventsToo: true);
 
@@ -785,23 +901,12 @@ internal sealed class AndroidHomeView : UserControl
             _isRefreshingChannelVods = true;
             // Keep the overlay pinned in its visible loading position for the full request.
             SetPullRefreshIndicatorPosition(76, visible: true);
-            pullRefreshDot.Fill = Brush("#7C5CFC");
             _pullRefreshSpinnerAngle = 0;
             _pullRefreshSpinnerTimer.Start();
             try
             {
                 var videos = await AndroidVodListingService.FetchLatestAsync(data.Channel);
                 if (!ReferenceEquals(_activePageScrollViewer, mediaScrollViewer)) return;
-                if (refreshThumbnails)
-                {
-                    var thumbnailUrls = videos.Select(video => video.ThumbnailUrl)
-                        .Where(url => !string.IsNullOrWhiteSpace(url)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-                    await Task.Run(() =>
-                    {
-                        foreach (var url in thumbnailUrls) _libraryStore.InvalidateMediaThumbnailCache(url!);
-                    });
-                }
-
                 var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 var rows = videos.Select(video => new TransferMedia(
                     platform,
@@ -827,17 +932,29 @@ internal sealed class AndroidHomeView : UserControl
                     RefreshMediaList();
                     if (refreshThumbnails && MainActivity.Current is { IsFinishing: false, IsDestroyed: false } activity)
                     {
-                        var resultText = addedCount == 0 ? "최신 VOD입니다" : $"새 VOD {addedCount}개 추가";
-                        global::Android.Widget.Toast.MakeText(activity, resultText, global::Android.Widget.ToastLength.Short)?.Show();
+                        var resultText = addedCount == 0
+                            ? "변경사항이 없습니다."
+                            : "변경사항을 업데이트 하였습니다.";
+                        ShowNotification(resultText);
                     }
                 });
             }
-            catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidDataException or IOException or InvalidOperationException)
+            catch (Exception exception)
             {
+                global::Android.Util.Log.Error("VOD refresh failed", exception.ToString());
+                var errorText = exception switch
+                {
+                    HttpRequestException => "서버에 연결할 수 없습니다. 네트워크를 확인해 주세요.",
+                    TaskCanceledException => "요청 시간이 초과되었습니다. 다시 시도해 주세요.",
+                    JsonException or InvalidDataException => "서버 응답을 읽을 수 없습니다. 잠시 후 다시 시도해 주세요.",
+                    IOException or UnauthorizedAccessException => "기록을 저장하지 못했습니다. 저장 공간을 확인해 주세요.",
+                    InvalidOperationException => "VOD 목록을 갱신하지 못했습니다. 다시 시도해 주세요.",
+                    _ => "새로고침 중 오류가 발생했습니다. 다시 시도해 주세요."
+                };
                 await Dispatcher.UIThread.InvokeAsync(() =>
                 {
                     if (refreshThumbnails && MainActivity.Current is { IsFinishing: false, IsDestroyed: false } activity)
-                        global::Android.Widget.Toast.MakeText(activity, "새로고침에 실패했습니다", global::Android.Widget.ToastLength.Short)?.Show();
+                        ShowNotification(errorText, isError: true);
                 });
             }
             finally
@@ -852,14 +969,14 @@ internal sealed class AndroidHomeView : UserControl
                         _pullRefreshSpinnerTimer.Stop();
                         _pullRefreshSpinnerAngle = 0;
                         if (pullRefreshIcon.RenderTransform is RotateTransform rotation) rotation.Angle = 0;
-                        pullRefreshDot.Fill = Brush("#777B8B");
                         SetPullRefreshIndicatorPosition(0);
                     });
                 }
             }
         }
         _refreshCurrentChannelVods = RefreshChannelVodsAsync;
-        Dispatcher.UIThread.Post(() => _ = RefreshChannelVodsAsync(false), DispatcherPriority.Background);
+        if (autoRefreshOnOpen)
+            Dispatcher.UIThread.Post(() => _ = RefreshChannelVodsAsync(false), DispatcherPriority.Background);
         return channelPage;
     }
 
@@ -886,11 +1003,11 @@ internal sealed class AndroidHomeView : UserControl
 
     private Control BuildMediaCard(SavedChannel channel, SavedMedia media, string accent, Action<bool> refreshFilteredList)
     {
-        var status = string.IsNullOrWhiteSpace(media.WatchStatus) ? "\uBBF8\uC2DC\uCCAD" : media.WatchStatus;
+        var status = NormalizeWatchStatus(media.WatchStatus);
         var statusColor = status switch
         {
-            "\uC2DC\uCCAD \uC644\uB8CC" => "#2E9B57",
-            "\uC2DC\uCCAD \uC911" => "#D99B18",
+            WatchStatusCompleted => "#2E9B57",
+            WatchStatusWatching => "#D99B18",
             _ => "#D84040"
         };
         var thumbnailImage = new Image { Stretch = Stretch.UniformToFill, IsVisible = false };
@@ -924,7 +1041,7 @@ internal sealed class AndroidHomeView : UserControl
                 statusBadge
             }
         };
-        var isWatching = status == "\uC2DC\uCCAD \uC911";
+        var isWatching = status == WatchStatusWatching;
         MediaCardVisual? mediaVisual = null;
         Button playbackTime = null!;
         playbackTime = MakeButton(FormatWatchTime(media.LastPositionSeconds), () => OpenPositionPicker(channel, media,
@@ -1068,21 +1185,22 @@ internal sealed class AndroidHomeView : UserControl
         Button statusButton = null!;
         statusButton = MakeButton(status, () =>
         {
-            var nextStatus = (string.IsNullOrWhiteSpace(media.WatchStatus) ? "\uBBF8\uC2DC\uCCAD" : media.WatchStatus) switch
+            var nextStatus = NormalizeWatchStatus(media.WatchStatus) switch
             {
-                "\uBBF8\uC2DC\uCCAD" => "\uC2DC\uCCAD \uC911",
-                "\uC2DC\uCCAD \uC911" => "\uC2DC\uCCAD \uC644\uB8CC",
-                _ => "\uBBF8\uC2DC\uCCAD"
+                WatchStatusUnwatched => WatchStatusWatching,
+                WatchStatusWatching => WatchStatusCompleted,
+                WatchStatusCompleted => WatchStatusUnwatched,
+                _ => WatchStatusUnwatched
             };
             media = media with { WatchStatus = nextStatus };
             _libraryStore.UpdateWatchStatus(channel.Platform, channel.ChannelId, media.VodId, nextStatus);
             statusButton.Content = nextStatus;
             statusBadgeText.Text = nextStatus;
-            var color = nextStatus switch { "\uC2DC\uCCAD \uC911" => "#D99B18", "\uC2DC\uCCAD \uC644\uB8CC" => "#2E9B57", _ => "#D84040" };
+            var color = nextStatus switch { WatchStatusWatching => "#D99B18", WatchStatusCompleted => "#2E9B57", _ => "#D84040" };
             statusButton.Background = Brush(color);
             statusButton.BorderBrush = Brush(color);
             statusBadge.Background = Brush(color);
-            var watching = nextStatus == "\uC2DC\uCCAD \uC911";
+            var watching = nextStatus == WatchStatusWatching;
             if (mediaVisual is not null) mediaVisual.IsWatching = watching;
             playbackPositionRow.IsVisible = watching;
             playbackTime.IsVisible = watching;
@@ -1106,7 +1224,7 @@ internal sealed class AndroidHomeView : UserControl
             ColumnSpacing = 6,
             Children =
             {
-                new TextBlock { Text = published, FontSize = 12, Foreground = Brush("#777B8B"), VerticalAlignment = VerticalAlignment.Center },
+                new TextBlock { Text = published, FontSize = 11, Foreground = Brush("#777B8B"), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center },
                 noteButton,
                 statusButton
             }
@@ -1125,21 +1243,48 @@ internal sealed class AndroidHomeView : UserControl
                 bottomRow
             }
         };
+        var cardInfo = new Border { Padding = new Thickness(14), Child = cardContent };
+        var useLandscapeLayout = _isLandscapeLayout && _showThumbnails;
+        var cardBody = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions(useLandscapeLayout ? "390,1,*" : "*"),
+            RowDefinitions = new RowDefinitions(useLandscapeLayout ? "*" : "Auto,Auto,*"),
+            ColumnSpacing = useLandscapeLayout ? 12 : 0
+        };
+        if (useLandscapeLayout)
+        {
+            thumbnailContent.Width = 390;
+            thumbnailContent.Height = double.NaN;
+            thumbnailContent.VerticalAlignment = VerticalAlignment.Stretch;
+            thumbnailContent.ClipToBounds = true;
+            thumbnailImage.Stretch = Stretch.Uniform;
+            cardBody.Children.Add(thumbnailContent);
+            var divider = new Border { Width = 1, Background = Brush("#E8E9EF"), VerticalAlignment = VerticalAlignment.Stretch };
+            cardBody.Children.Add(divider);
+            Grid.SetColumn(divider, 1);
+            cardBody.Children.Add(cardInfo);
+            Grid.SetColumn(cardInfo, 2);
+        }
+        else
+        {
+            cardBody.Children.Add(thumbnailContent);
+            var divider = new Border { Height = 1, Background = Brush("#E8E9EF") };
+            cardBody.Children.Add(divider);
+            Grid.SetRow(divider, 1);
+            cardBody.Children.Add(cardInfo);
+            Grid.SetRow(cardInfo, 2);
+        }
         mediaVisual = new MediaCardVisual(thumbnailContent, thumbnailImage, playIndicator,
             LibraryTransfer.NormalizePlatform(channel.Platform), media.ThumbnailUrl, media.OnlineUrl,
             media.LastPositionSeconds, isWatching, playbackTime, playbackProgress, totalDuration, inlineDuration);
         _mediaCardVisuals.Add(mediaVisual);
-        var card = Card(new StackPanel
-        {
-            Spacing = 0,
-            Children = { thumbnailContent, new Border { Height = 1, Background = Brush("#E8E9EF") }, new Border { Padding = new Thickness(14), Child = cardContent } }
-        });
+        var card = Card(cardBody);
         void RegisterMediaOpenTap(Control target)
         {
             target.PointerPressed += (_, e) =>
             {
                 if (!e.GetCurrentPoint(target).Properties.IsLeftButtonPressed || string.IsNullOrWhiteSpace(media.OnlineUrl)) return;
-                var address = media.WatchStatus == "\uC2DC\uCCAD \uC911"
+                var address = NormalizeWatchStatus(media.WatchStatus) == WatchStatusWatching
                     ? AddVodStartPosition(media.OnlineUrl, channel.Platform, media.LastPositionSeconds)
                     : media.OnlineUrl;
                 _mediaCardTapCandidate = new MediaCardTapCandidate(e.GetPosition(_root), address, e.Pointer);
@@ -1156,8 +1301,10 @@ internal sealed class AndroidHomeView : UserControl
         var previousScrollViewer = _activePageScrollViewer;
         var previousPageTitle = _pageTitle.Text;
         var wasChannelBackVisible = _channelBackButton?.IsVisible ?? false;
+        _isMemoEditorActive = true;
         void ReturnToLibraryPage()
         {
+            _isMemoEditorActive = false;
             _pageHost.Content = previousPage;
             _activePageScrollViewer = previousScrollViewer;
             _pageTitle.Text = previousPageTitle;
@@ -1248,10 +1395,12 @@ internal sealed class AndroidHomeView : UserControl
             if (isVisible)
             {
                 visual.IsVisible = true;
-                if (_showThumbnails && !string.IsNullOrWhiteSpace(visual.ThumbnailUrl) && visual.Bitmap is null &&
+                var canFetchThumbnail = !string.IsNullOrWhiteSpace(visual.ThumbnailUrl) ||
+                                        (visual.Platform == "SOOP" && !string.IsNullOrWhiteSpace(visual.OnlineUrl));
+                if (_showThumbnails && canFetchThumbnail && visual.Bitmap is null &&
                     visual.ThumbnailCancellation is null && !visual.ThumbnailHasFailed)
                 {
-                    visual.ThumbnailCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                    visual.ThumbnailCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(40));
                     _ = LoadMediaThumbnailAsync(visual, visual.ThumbnailCancellation);
                 }
                 if (!string.IsNullOrWhiteSpace(visual.OnlineUrl) &&
@@ -1281,16 +1430,35 @@ internal sealed class AndroidHomeView : UserControl
         Bitmap? bitmap = null;
         try
         {
-            var cachePath = _libraryStore.GetMediaThumbnailPath(visual.ThumbnailUrl!);
-            byte[] bytes;
-            if (File.Exists(cachePath))
-                bytes = await File.ReadAllBytesAsync(cachePath, cancellation.Token);
-            else
+            byte[]? bytes = null;
+            if (!string.IsNullOrWhiteSpace(visual.ThumbnailUrl))
             {
-                bytes = await AndroidChannelProfileService.DownloadImageAsync(visual.ThumbnailUrl!,
-                    LibraryTransfer.NormalizePlatform(visual.Platform), cancellation.Token);
-                await File.WriteAllBytesAsync(cachePath, bytes, cancellation.Token);
+                try
+                {
+                    bytes = await AndroidChannelProfileService.DownloadImageAsync(
+                        visual.ThumbnailUrl, visual.Platform, visual.OnlineUrl, cancellation.Token);
+                }
+                catch (Exception exception) when (exception is HttpRequestException or IOException or InvalidDataException or ArgumentException)
+                {
+                    global::Android.Util.Log.Warn("VOD thumbnail", $"Primary image request failed: {exception.Message}");
+                }
             }
+
+            if (bytes is null && visual.Platform == "SOOP" && !string.IsNullOrWhiteSpace(visual.OnlineUrl))
+            {
+                var fallbackUrl = await AndroidVodListingService.FetchThumbnailFallbackAsync(
+                    visual.Platform, visual.OnlineUrl, cancellation.Token);
+                if (!string.IsNullOrWhiteSpace(fallbackUrl) &&
+                    !string.Equals(fallbackUrl, visual.ThumbnailUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    visual.SetThumbnailUrl(fallbackUrl);
+                    bytes = await AndroidChannelProfileService.DownloadImageAsync(
+                        fallbackUrl, visual.Platform, visual.OnlineUrl, cancellation.Token);
+                }
+            }
+
+            if (bytes is null)
+                throw new InvalidDataException("No usable thumbnail URL was returned for this VOD.");
             using var stream = new MemoryStream(bytes);
             bitmap = new Bitmap(stream);
             await Dispatcher.UIThread.InvokeAsync(() =>
@@ -1307,6 +1475,8 @@ internal sealed class AndroidHomeView : UserControl
         }
         catch (Exception exception) when (exception is HttpRequestException or IOException or InvalidDataException or ArgumentException or UnauthorizedAccessException or OperationCanceledException)
         {
+            if (exception is not OperationCanceledException && Uri.TryCreate(visual.ThumbnailUrl, UriKind.Absolute, out var failedUri))
+                global::Android.Util.Log.Warn("VOD thumbnail", $"Image request failed for {failedUri.Host}: {exception.Message}");
             if (visual.IsVisible && ReferenceEquals(visual.ThumbnailCancellation, cancellation))
                 visual.ThumbnailHasFailed = true;
         }
@@ -1369,6 +1539,19 @@ internal sealed class AndroidHomeView : UserControl
     {
         var time = TimeSpan.FromSeconds(Math.Max(0, Math.Floor(seconds)));
         return $"{(long)time.TotalHours:00}:{time.Minutes:00}:{time.Seconds:00}";
+    }
+
+    private static string NormalizeWatchStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return WatchStatusUnwatched;
+        var compact = string.Concat(status.Where(character => !char.IsWhiteSpace(character)));
+        return compact switch
+        {
+            WatchStatusUnwatched => WatchStatusUnwatched,
+            WatchStatusWatching => WatchStatusWatching,
+            WatchStatusCompleted => WatchStatusCompleted,
+            _ => status.Trim()
+        };
     }
 
     private void OpenPositionPicker(SavedChannel channel, SavedMedia media, Func<double?> getDuration, Action<double> onPositionUpdated)
@@ -1477,7 +1660,7 @@ internal sealed class AndroidHomeView : UserControl
         public Image Image { get; } = image;
         public Control Placeholder { get; } = placeholder;
         public string Platform { get; } = platform;
-        public string? ThumbnailUrl { get; } = thumbnailUrl;
+        public string? ThumbnailUrl { get; private set; } = thumbnailUrl;
         public string? OnlineUrl { get; } = onlineUrl;
         public double PositionSeconds { get; set; } = positionSeconds;
         public bool IsWatching { get; set; } = isWatching;
@@ -1492,6 +1675,7 @@ internal sealed class AndroidHomeView : UserControl
         public Bitmap? Bitmap { get; set; }
         public CancellationTokenSource? ThumbnailCancellation { get; set; }
         public CancellationTokenSource? DurationCancellation { get; set; }
+        public void SetThumbnailUrl(string url) => ThumbnailUrl = url;
     }
 
     private sealed class MediaCardTapCandidate(Point start, string url, IPointer pointer)
@@ -1613,19 +1797,6 @@ internal sealed class AndroidHomeView : UserControl
         ReleaseMediaThumbnailVisuals();
         _isSettingsActive = true;
         UpdateDrawerSelection();
-        var clientIdInput = new TextBox
-        {
-            Text = _settings.LoadGoogleOAuthClientId(),
-            PlaceholderText = "Android OAuth Client ID",
-            MinHeight = 42,
-            VerticalContentAlignment = VerticalAlignment.Center,
-            TextWrapping = TextWrapping.Wrap,
-            Background = Brush("#FFFFFF"),
-            Foreground = Brush("#292B3A"),
-            BorderBrush = Brush("#E5E6ED"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(9)
-        };
         var cardBatchSizeInput = new TextBox
         {
             Text = _settings.LoadCardBatchSize().ToString(),
@@ -1647,19 +1818,52 @@ internal sealed class AndroidHomeView : UserControl
             cardBatchSizeInput.Text = size.ToString();
             cardBatchStatus.Text = $"카드 표시 수를 {size}개로 저장했습니다. 다음 채널 화면부터 적용됩니다.";
         }, primary: true);
-        var status = new TextBlock
+        var driveCheckIntervalInput = new TextBox
         {
-            Text = string.IsNullOrWhiteSpace(clientIdInput.Text) ? "Client ID가 설정되지 않았습니다." : "Client ID가 이 기기에 저장되어 있습니다.",
+            Text = _settings.LoadDriveCheckIntervalSeconds().ToString(),
+            PlaceholderText = "90",
+            MinHeight = 42,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Background = Brush("#FFFFFF"),
+            Foreground = Brush("#292B3A"),
+            BorderBrush = Brush("#E5E6ED"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(9)
+        };
+        var driveCheckIntervalStatus = new TextBlock
+        {
+            Text = "기본값은 90초입니다. 1~86400초 사이로 설정할 수 있습니다.",
             TextWrapping = TextWrapping.Wrap,
             Foreground = Brush("#777B8B")
         };
-        var saveClientId = MakeButton("Client ID 저장", () =>
+        var saveDriveCheckInterval = MakeButton("동기화 주기 저장", () =>
         {
-            _settings.SaveGoogleOAuthClientId(clientIdInput.Text ?? string.Empty);
-            status.Text = string.IsNullOrWhiteSpace(_settings.LoadGoogleOAuthClientId())
-                ? "Client ID가 비워졌습니다."
-                : "Android OAuth Client ID를 저장했습니다.";
+            var seconds = int.TryParse(driveCheckIntervalInput.Text, out var parsed) ? parsed : 90;
+            seconds = Math.Clamp(seconds, 1, 86400);
+            _settings.SaveDriveCheckIntervalSeconds(seconds);
+            driveCheckIntervalInput.Text = seconds.ToString();
+            _driveCheckTimer.Interval = TimeSpan.FromSeconds(seconds);
+            if (_isViewAttached)
+            {
+                _driveCheckTimer.Stop();
+                _driveCheckTimer.Start();
+            }
+            driveCheckIntervalStatus.Text = $"Drive 변경사항 확인 주기를 {seconds}초로 저장했습니다.";
         }, primary: true);
+        var driveStatus = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail())
+                ? "Google 계정이 연결되지 않았습니다."
+                : $"연결된 계정: {_settings.LoadGoogleDriveAccountEmail()}",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = Brush("#777B8B")
+        };
+        var connectDrive = MakeButton("Google 계정 연결 및 동기화", () =>
+            _ = RunDriveSyncAsync(connectFirst: true, quiet: false, driveStatus), primary: true);
+        var syncDrive = MakeButton("지금 동기화", () =>
+            _ = RunDriveSyncAsync(connectFirst: false, quiet: false, driveStatus));
+        var disconnectDrive = MakeButton("Google 계정 연결 해제", () =>
+            _ = DisconnectGoogleDriveAsync(driveStatus));
 
         _pageHost.Content = BuildPage("설정", new StackPanel
         {
@@ -1682,6 +1886,17 @@ internal sealed class AndroidHomeView : UserControl
                     Spacing = 11,
                     Children =
                     {
+                        new TextBlock { Text = "Google Drive 동기화 주기", FontSize = 17, FontWeight = FontWeight.SemiBold, Foreground = Brush("#292B3A") },
+                        driveCheckIntervalInput,
+                        saveDriveCheckInterval,
+                        driveCheckIntervalStatus
+                    }
+                }),
+                Card(new StackPanel
+                {
+                    Spacing = 11,
+                    Children =
+                    {
                         new TextBlock { Text = "화면 테마", FontSize = 17, FontWeight = FontWeight.SemiBold, Foreground = Brush("#292B3A") },
                         new TextBlock { Text = "앱 화면의 배경과 글자 색을 함께 변경합니다.", FontSize = 14, TextWrapping = TextWrapping.Wrap, Foreground = Brush("#777B8B") },
                         MakeButton(_isDarkTheme ? "라이트 모드로 전환" : "다크 모드로 전환", ToggleTheme)
@@ -1695,32 +1910,181 @@ internal sealed class AndroidHomeView : UserControl
                         new TextBlock { Text = "Google Drive 동기화", FontSize = 17, FontWeight = FontWeight.SemiBold, Foreground = Brush("#292B3A") },
                         new TextBlock
                         {
-                            Text = "Windows 앱과 같은 Google Drive 파일을 사용합니다. Android 전용 OAuth Client ID를 입력하세요. Client Secret은 Android 앱에 저장하지 않습니다.",
+                            Text = "Windows 앱과 StreamVODTracker.sync.json 파일을 공유합니다. Google Cloud에서 Drive API를 활성화하고 Android 앱 ID com.hwcoms.streamvodtracker와 APK 서명 SHA-1로 Android OAuth 클라이언트를 등록하세요. OAuth 동의 화면의 테스트 사용자에도 계정을 추가해야 합니다.",
                             FontSize = 14,
                             TextWrapping = TextWrapping.Wrap,
                             Foreground = Brush("#777B8B")
                         },
-                        new TextBlock { Text = "Android OAuth Client ID", FontSize = 13, FontWeight = FontWeight.SemiBold, Foreground = Brush("#55596A") },
-                        clientIdInput,
-                        saveClientId,
-                        status,
-                        new Separator(),
-                        new TextBlock { Text = "계정 연결 및 Drive 동기화는 다음 구현 단계에서 연결됩니다.", FontSize = 13, TextWrapping = TextWrapping.Wrap, Foreground = Brush("#777B8B") }
+                        driveStatus,
+                        connectDrive,
+                        disconnectDrive,
+                        syncDrive
                     }
                 })
             }
         });
     }
 
+    private void ScheduleDriveUpload()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail())) return;
+        _driveUploadPending = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_isDriveSyncing) return;
+            _driveUploadTimer.Stop();
+            _driveUploadTimer.Start();
+        });
+    }
+
+    private async Task RunDriveSyncAsync(bool connectFirst, bool quiet, TextBlock? status = null, bool refreshUiOnSuccess = false)
+    {
+        if (_isDriveSyncing)
+        {
+            _driveUploadPending = true;
+            return;
+        }
+        if (!connectFirst && string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail()))
+        {
+            if (status is not null) status.Text = "먼저 Google 계정을 연결하세요.";
+            return;
+        }
+
+        var activity = MainActivity.Current;
+        if (activity is null || activity.IsFinishing || activity.IsDestroyed)
+        {
+            if (status is not null) status.Text = "앱이 활성 상태가 아닙니다. 다시 시도해 주세요.";
+            return;
+        }
+
+        _isDriveSyncing = true;
+        _driveUploadTimer.Stop();
+        _driveCheckTimer.Stop();
+        _driveUploadPending = false;
+        _driveSyncRetryPending = false;
+        if (status is not null) status.Text = connectFirst ? "Google 계정 권한을 확인하는 중…" : "Google Drive 동기화 중…";
+        try
+        {
+            var count = connectFirst
+                ? await _driveSyncService.ConnectAndSyncAsync(activity)
+                : await _driveSyncService.SyncAsync(activity);
+            var email = _settings.LoadGoogleDriveAccountEmail();
+            if (status is not null) status.Text = $"{email} 계정 동기화 완료 ({count}개 채널)";
+            if (!quiet) ShowNotification("Google Drive 동기화 완료");
+            if (refreshUiOnSuccess && !_isSettingsActive)
+                await Dispatcher.UIThread.InvokeAsync(RefreshCurrentPageAfterDriveSync);
+        }
+        catch (Exception exception)
+        {
+            global::Android.Util.Log.Error("Google Drive sync failed", exception.ToString());
+            if (quiet) _driveSyncRetryPending = true;
+            if (status is not null) status.Text = $"Google Drive 동기화 실패: {exception.Message}";
+            else if (!quiet && MainActivity.Current is { IsFinishing: false, IsDestroyed: false })
+                ShowNotification($"Google Drive 동기화 실패: {exception.Message}", isError: true);
+        }
+        finally
+        {
+            _isDriveSyncing = false;
+            if (_isViewAttached)
+            {
+                _driveCheckTimer.Start();
+                if (_driveUploadPending && !string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail()))
+                {
+                    _driveUploadTimer.Stop();
+                    _driveUploadTimer.Start();
+                }
+            }
+        }
+    }
+
+    private async Task CheckDriveForChangesAsync()
+    {
+        if (_isDriveSyncing || string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail())) return;
+        var activity = MainActivity.Current;
+        if (activity is null || activity.IsFinishing || activity.IsDestroyed) return;
+        try
+        {
+            _isDriveSyncing = true;
+            if (await _driveSyncService.CheckForRemoteChangesAsync(activity))
+                await Dispatcher.UIThread.InvokeAsync(RefreshCurrentPageAfterDriveSync);
+        }
+        catch (Exception exception)
+        {
+            global::Android.Util.Log.Error("Google Drive change check failed", exception.ToString());
+        }
+        finally
+        {
+            _isDriveSyncing = false;
+            if (_driveUploadPending) ScheduleDriveUpload();
+        }
+    }
+
+    private void RefreshCurrentPageAfterDriveSync()
+    {
+        if (_isSettingsActive || _isMemoEditorActive) return;
+        var scrollOffset = _activePageScrollViewer?.Offset.Y ?? 0;
+        if (_selectedChannelKey is { } selectedKey)
+        {
+            var selectedChannel = _libraryStore.LoadAll()
+                .FirstOrDefault(item => ChannelKey(item.Channel) == selectedKey);
+            if (selectedChannel is not null)
+            {
+                _pageTitle.Text = selectedChannel.Channel.Name;
+                if (_channelBackButton is not null) _channelBackButton.IsVisible = true;
+                _pageHost.Content = BuildChannelDetails(selectedChannel, autoRefreshOnOpen: false);
+                Dispatcher.UIThread.Post(() => RestoreLibraryScrollOffset(scrollOffset), DispatcherPriority.Background);
+                return;
+            }
+        }
+
+        ShowLibrary();
+        Dispatcher.UIThread.Post(() => RestoreLibraryScrollOffset(scrollOffset), DispatcherPriority.Background);
+    }
+
+    private async Task DisconnectGoogleDriveAsync(TextBlock status)
+    {
+        if (_isDriveSyncing)
+        {
+            status.Text = "동기화가 끝난 뒤 연결을 해제해 주세요.";
+            return;
+        }
+        var activity = MainActivity.Current;
+        try
+        {
+            var accountEmail = _settings.LoadGoogleDriveAccountEmail();
+            if (!string.IsNullOrWhiteSpace(accountEmail) && activity is not null &&
+                !activity.IsFinishing && !activity.IsDestroyed)
+                await activity.RevokeGoogleDriveAuthorizationAsync(accountEmail);
+            _settings.SaveGoogleDriveAccountEmail(string.Empty);
+            _driveUploadTimer.Stop();
+            _driveCheckTimer.Stop();
+            status.Text = "Google 계정 연결을 해제했습니다. Drive 기록은 삭제하지 않았습니다.";
+        }
+        catch (Exception exception)
+        {
+            global::Android.Util.Log.Error("Google Drive disconnect failed", exception.ToString());
+            status.Text = $"계정 연결 해제 실패: {exception.Message}";
+        }
+    }
+
     private Control BuildPage(string title, Control content)
     {
         _pageTitle.Text = title;
+        var contentWithBottomSpace = new StackPanel
+        {
+            MinWidth = 0,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Thickness(12, 8, 12, 0),
+            Children = { content, new Border { Height = 72 } }
+        };
         var scrollViewer = new ScrollViewer
         {
-            Content = content,
+            Content = contentWithBottomSpace,
             Background = Brush("#F5F6FA"),
-            Padding = new Thickness(0, 8, 0, 20),
-            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto
+            VerticalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            ClipToBounds = true
         };
         _activePageScrollViewer = scrollViewer;
         scrollViewer.ScrollChanged += (_, e) =>
@@ -1807,7 +2171,7 @@ internal sealed class AndroidHomeView : UserControl
         };
         var themeButton = new Button
         {
-            Content = _isDarkTheme ? "☀" : "☾",
+            Content = BuildThemeIcon(_isDarkTheme),
             Width = 48,
             Height = 48,
             Padding = new Thickness(0),
@@ -1824,7 +2188,7 @@ internal sealed class AndroidHomeView : UserControl
         _drawerThemeButton = themeButton;
         var settingsButton = new Button
         {
-            Content = "⚙",
+            Content = BuildSettingsIcon(),
             Width = 48,
             Height = 48,
             Padding = new Thickness(0),
@@ -2083,12 +2447,67 @@ internal sealed class AndroidHomeView : UserControl
             _headerSettingsButton.Background = _isSettingsActive ? Brush("#6046C8") : Brushes.Transparent;
         if (_drawerThemeButton is not null)
         {
-            _drawerThemeButton.Content = _isDarkTheme ? "☀" : "☾";
+            _drawerThemeButton.Content = BuildThemeIcon(_isDarkTheme);
             _drawerThemeButton.Background = Brush("#20232F");
             _drawerThemeButton.Foreground = Brushes.White;
         }
         if (_headerThemeButton is not null)
-            _headerThemeButton.Content = _isDarkTheme ? "☀" : "☾";
+            _headerThemeButton.Content = BuildThemeIcon(_isDarkTheme);
+    }
+
+    private static Control BuildThemeIcon(bool isDarkTheme)
+    {
+        if (isDarkTheme)
+            return new TextBlock
+            {
+                Text = "☀",
+                FontSize = 22,
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+        return new Avalonia.Controls.Shapes.Path
+        {
+            Data = Geometry.Parse("M 20.8,13 A 9,9 0 0 1 11,3.2 A 9,9 0 1 0 20.8,13 Z"),
+            Width = 22,
+            Height = 22,
+            Fill = Brushes.White,
+            Stretch = Stretch.Uniform
+        };
+    }
+
+    private static Control BuildSettingsIcon()
+    {
+        var canvas = new Canvas { Width = 24, Height = 24 };
+        var knobPositions = new[] { 5d, 12d, 17d };
+        var rows = new[] { 4d, 11d, 18d };
+        for (var i = 0; i < rows.Length; i++)
+        {
+            var line = new Border
+            {
+                Width = 20,
+                Height = 2,
+                CornerRadius = new CornerRadius(1),
+                Background = Brushes.White
+            };
+            Canvas.SetLeft(line, 2);
+            Canvas.SetTop(line, rows[i] + 3);
+            canvas.Children.Add(line);
+
+            var knob = new Ellipse
+            {
+                Width = 6,
+                Height = 6,
+                Fill = Brush("#171923"),
+                Stroke = Brushes.White,
+                StrokeThickness = 1.5
+            };
+            Canvas.SetLeft(knob, knobPositions[i]);
+            Canvas.SetTop(knob, rows[i] + 1);
+            canvas.Children.Add(knob);
+        }
+        return canvas;
     }
 
     private void Root_PointerPressed(object? sender, PointerPressedEventArgs e)
@@ -2150,6 +2569,16 @@ internal sealed class AndroidHomeView : UserControl
         Padding = new Thickness(16),
         Child = child
     };
+
+    private void ShowNotification(string message, bool isError = false)
+    {
+        if (_appNotification is null || _appNotificationText is null) return;
+        _appNotificationText.Text = message;
+        _appNotification.BorderBrush = Brush(isError ? "#E05D68" : "#35B879");
+        _appNotification.IsVisible = true;
+        _appNotificationTimer.Stop();
+        _appNotificationTimer.Start();
+    }
 
     private static Button MakeButton(string text, Action onClick, bool primary = false)
     {

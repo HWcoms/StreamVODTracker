@@ -12,6 +12,20 @@
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
 
+  <!-- Debug APKs shared outside the IDE must include managed assemblies instead of Fast Deployment files. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+  </PropertyGroup>
+
+  <!-- Release artifacts must use the same developer-owned key for testing and distribution. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <AndroidKeyStore>true</AndroidKeyStore>
+    <AndroidSigningKeyStore Condition="'$(AndroidSigningKeyStore)' == ''">$(STREAMVODTRACKER_KEYSTORE)</AndroidSigningKeyStore>
+    <AndroidSigningKeyAlias Condition="'$(AndroidSigningKeyAlias)' == ''">$(STREAMVODTRACKER_KEY_ALIAS)</AndroidSigningKeyAlias>
+    <AndroidSigningStorePass Condition="'$(AndroidSigningStorePass)' == ''">$(STREAMVODTRACKER_KEYSTORE_PASSWORD)</AndroidSigningStorePass>
+    <AndroidSigningKeyPass Condition="'$(AndroidSigningKeyPass)' == ''">$(STREAMVODTRACKER_KEY_PASSWORD)</AndroidSigningKeyPass>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="../../src/VODTracker.Core/VODTracker.Core.csproj" />
     <AndroidResource Include="../../assets/app_icon.png" Link="Resources/mipmap/app_icon.png" />
@@ -19,5 +33,7 @@
     <PackageReference Include="Avalonia.Android" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
     <PackageReference Include="Avalonia.Fonts.Inter" />
+    <PackageReference Include="Xamarin.GooglePlayServices.Auth" />
+    <PackageReference Include="Xamarin.AndroidX.Lifecycle.Process" />
   </ItemGroup>
 </Project>

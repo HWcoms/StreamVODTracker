@@ -323,9 +323,15 @@
                                                             <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" IsVisible="{Binding HasThumbnail}" />
                                                         </Grid>
                                                     </Border>
-                                                    <TextBlock Grid.Row="1" Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
-                                                               Height="36" VerticalAlignment="Top" TextTrimming="CharacterEllipsis" MaxLines="2"
-                                                               ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1"><ToolTip.Tip><TextBlock Text="{Binding Title}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="4">
+                                                        <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
+                                                                   Height="36" VerticalAlignment="Top" TextTrimming="CharacterEllipsis" MaxLines="2"
+                                                                   ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1"><ToolTip.Tip><TextBlock Text="{Binding Title}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                        <Button Grid.Column="1" Content="{Binding FavoriteGlyph}" Foreground="{Binding FavoriteForeground}"
+                                                                Background="Transparent" BorderThickness="0" Padding="0" Width="28" Height="28" FontSize="19"
+                                                                HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="FavoriteCard_Click"
+                                                                ToolTip.Tip="즐겨찾기" />
+                                                    </Grid>
                                                     <Grid Grid.Row="2" Height="{Binding OnlineSourceRowHeight}" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand"
                                                           VerticalAlignment="Top" PointerPressed="MediaSource_PointerPressed">
                                                         <Canvas Width="18" Height="18" VerticalAlignment="Center">
@@ -422,9 +428,15 @@
                                                 </Border>
                                                 <Grid Grid.Column="1" RowDefinitions="Auto,Auto,Auto" RowSpacing="4">
                                                     <StackPanel Spacing="6" VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
-                                                                   Height="22" VerticalAlignment="Top" TextTrimming="CharacterEllipsis" MaxLines="1"
-                                                                   ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1"><ToolTip.Tip><TextBlock Text="{Binding Title}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="4">
+                                                            <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource CardTitleBrush}"
+                                                                       Height="22" VerticalAlignment="Top" TextTrimming="CharacterEllipsis" MaxLines="1"
+                                                                       ToolTip.ShowDelay="100" ToolTip.BetweenShowDelay="-1"><ToolTip.Tip><TextBlock Text="{Binding Title}" TextWrapping="Wrap" TextTrimming="None" MaxLines="0" MaxWidth="900" MaxHeight="700" /></ToolTip.Tip></TextBlock>
+                                                            <Button Grid.Column="1" Content="{Binding FavoriteGlyph}" Foreground="{Binding FavoriteForeground}"
+                                                                    Background="Transparent" BorderThickness="0" Padding="0" Width="26" Height="24" FontSize="18"
+                                                                    HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="FavoriteCard_Click"
+                                                                    ToolTip.Tip="즐겨찾기" />
+                                                        </Grid>
                                                         <Grid Height="{Binding OnlineSourceRowHeight}" ColumnDefinitions="20,*" ColumnSpacing="4" Cursor="Hand" PointerPressed="MediaSource_PointerPressed">
                                                             <Canvas Width="18" Height="18" VerticalAlignment="Center">
                                                                 <Ellipse Canvas.Left="1.5" Canvas.Top="2" Width="13" Height="13" Stroke="{DynamicResource SecondaryTextBrush}" StrokeThickness="1.2" />

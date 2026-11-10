@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Net;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using VODTracker.Core;
 
 namespace VODTracker.Android;
@@ -19,11 +21,83 @@ internal static class AndroidVodListingService
             ? FetchSoopAsync(channel.ChannelId, cancellationToken)
             : FetchChzzkAsync(channel.ChannelId, cancellationToken);
 
+    public static Task<string?> FetchThumbnailFallbackAsync(string platform, string vodUrl, CancellationToken cancellationToken = default) =>
+        LibraryTransfer.NormalizePlatform(platform) == "SOOP"
+            ? FetchSoopThumbnailFallbackAsync(vodUrl, cancellationToken)
+            : FetchPageThumbnailUrlAsync(vodUrl, cancellationToken);
+
+    private static async Task<string?> FetchSoopThumbnailFallbackAsync(string vodUrl, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(vodUrl, UriKind.Absolute, out var vodUri)) return null;
+        var match = Regex.Match(vodUri.AbsolutePath, @"(?:player|PLAYER/STATION)/(\d+)", RegexOptions.IgnoreCase);
+        if (match.Success)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.m.sooplive.com/station/video/a/view")
+                {
+                    Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                    {
+                        ["nTitleNo"] = match.Groups[1].Value,
+                        ["nApiLevel"] = "10"
+                    })
+                };
+                request.Headers.UserAgent.ParseAdd(AndroidChannelProfileService.DesktopUserAgent);
+                request.Headers.Referrer = vodUri;
+                using var response = await Client.SendAsync(request, cancellationToken);
+                response.EnsureSuccessStatusCode();
+                using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+                if (json.RootElement.TryGetProperty("data", out var data))
+                {
+                    var thumbnail = ReadFirstString(data, "thumb", "thumbnail", "thumbnail_url", "thumb_url");
+                    if (!string.IsNullOrWhiteSpace(thumbnail)) return NormalizeImageUrl(thumbnail, vodUri);
+                }
+            }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
+            {
+                global::Android.Util.Log.Warn("SOOP thumbnail fallback", exception.Message);
+            }
+        }
+        return await FetchPageThumbnailUrlAsync(vodUrl, cancellationToken);
+    }
+
+    private static async Task<string?> FetchPageThumbnailUrlAsync(string pageUrl, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, pageUrl);
+            request.Headers.UserAgent.ParseAdd(AndroidChannelProfileService.DesktopUserAgent);
+            using var response = await Client.SendAsync(request, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            var html = await response.Content.ReadAsStringAsync(cancellationToken);
+            var match = Regex.Match(html,
+                "<meta[^>]+(?:property|name)=[\\\"'](?:og:image|twitter:image)[\\\"'][^>]+content=[\\\"']([^\\\"']+)[\\\"']|<meta[^>]+content=[\\\"']([^\\\"']+)[\\\"'][^>]+(?:property|name)=[\\\"'](?:og:image|twitter:image)[\\\"']",
+                RegexOptions.IgnoreCase);
+            if (!match.Success || !Uri.TryCreate(pageUrl, UriKind.Absolute, out var pageUri)) return null;
+            var value = WebUtility.HtmlDecode(match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value);
+            return NormalizeImageUrl(value, pageUri);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or UriFormatException or InvalidOperationException)
+        {
+            global::Android.Util.Log.Warn("SOOP thumbnail page fallback", exception.Message);
+            return null;
+        }
+    }
+
+    private static string? NormalizeImageUrl(string? imageUrl, Uri baseUri)
+    {
+        if (string.IsNullOrWhiteSpace(imageUrl)) return null;
+        if (imageUrl.StartsWith("//", StringComparison.Ordinal)) return $"https:{imageUrl}";
+        return Uri.TryCreate(baseUri, imageUrl, out var imageUri) && imageUri.Scheme is "http" or "https"
+            ? imageUri.AbsoluteUri
+            : null;
+    }
+
     private static async Task<IReadOnlyList<AndroidVodListingItem>> FetchSoopAsync(string channelId, CancellationToken cancellationToken)
     {
         var url = $"https://chapi.sooplive.com/api/{Uri.EscapeDataString(channelId)}/vods/all/streamer?page=1&per_page={SoopPageSize}&orderby=reg_date";
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.UserAgent.ParseAdd(UserAgent);
+        request.Headers.UserAgent.ParseAdd(AndroidChannelProfileService.DesktopUserAgent);
         using var response = await Client.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
