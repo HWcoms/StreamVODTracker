@@ -1,5 +1,15 @@
 # 다음 작업 목록
 
+## 최근 작업 완료 — 2026-11-15
+
+- [X] Android 앱에서 치지직·SOOP 채널과 VOD를 탐색하고, 채널 VOD 새로고침과 CSV 가져오기·내보내기를 제공한다.
+- [X] Android 시스템 뒤로가기와 화면 좌측 상단 뒤로가기를 연결한다. 채널 VOD에서 이전 채널/사이트 목록으로 돌아가고, 설정에서는 이전 화면으로 복귀한다.
+- [X] Android 설정 진입 전 스크롤 위치를 저장해 복귀할 때 복원하고, 설정에서 돌아올 때 채널 VOD 목록을 다시 요청하지 않는다.
+- [X] Android 노트 편집에서 시스템 뒤로가기와 화면 뒤로가기는 저장하지 않고 취소한다.
+- [X] Windows 설정 창과 노트 편집 창에서 `Esc` 키로 닫거나 취소한다.
+- [X] Android ARM64 테스트 APK를 빌드하고 서명을 확인한다. Windows x64 self-contained Release 배포본을 publish한다.
+- [ ] 최신 Android APK를 실기기에 설치해 시스템/화면 뒤로가기, 설정 스크롤 복원, 노트 취소를 다시 확인한다.
+
 ## Android 보기 모드
 
 - [ ] Android 앱에서도 Windows 앱처럼 그리드 보기와 리스트 보기 전환을 추가한다.
@@ -8,13 +18,13 @@
 
 다음 UI/데이터 작업과 기반 구조 작업은 아래 순서와 우선순위로 진행한다. 완료한 항목은 상태와 검증 결과를 이 문서에서 갱신한다. 구현 전 현재 프로젝트와 데이터 구조를 확인하고, 기존 구현에 적용되지 않은 항목만 추가·수정한다.
 
-## 오늘 추가 — 2026-11-06 (내일 확인)
+## Drive 및 Android 확장 — 진행 중
 
 ### 동기화 및 기기별 영상 참조
 
 - [X]  앱이 켜져 있을 때 Drive JSON의 `modifiedTime`을 1~2분 간격으로 확인하고, 변경이 있을 때만 내용을 내려받아 병합한다. 앱이 꺼져 있거나 비활성일 때는 다음 실행·재활성화 때 확인한다.
 - [ ]  Windows Pro·Enterprise·Education의 Sandbox에 앱을 복사해 새 PC처럼 계정을 연결하고, Drive에서 내려받기와 변경 업로드를 확인한다. Sandbox를 닫으면 내부 설정과 데이터가 초기화된다.
-- [ ]  Android는 PC 전원 상태와 무관하게 Drive 카드 정보를 조회·수정할 수 있게 한다. 로컬 영상은 파일에 접근 가능한 기기에서 재생하고, PC 원격 재생 서비스는 별도 요구가 있을 때만 검토한다.
+- [X]  Android는 PC 전원 상태와 무관하게 Google Drive의 보관함 정보를 동기화할 수 있다. 로컬 영상은 파일에 접근 가능한 기기에서 재생하고, PC 원격 재생 서비스는 별도 요구가 있을 때만 검토한다.
 - [ ]  Drive JSON의 로컬 영상 참조를 PC 경로와 Android 영상 참조로 분리한다. 예: `DesktopLocalFilePath`, `AndroidLocalFileUri`.
 - [ ]  각 앱은 자기 플랫폼의 영상 참조만 열고 수정하며, 한 플랫폼에서 파일을 연결하거나 해제해도 다른 플랫폼의 참조를 보존한다. 영상 파일 자체는 Drive에 올리지 않는다.
 - [ ]  Android 파일 선택기의 `content://` URI 권한을 재실행 후에도 사용할 수 있도록 저장 방식을 정한다. 여러 Android 기기를 지원할 때는 URI가 기기별이므로 Android 참조를 기기별로 나눌지 결정한다.
@@ -28,12 +38,14 @@
 - [ ]  나머지 공통 카드 모델·저장소·Drive 동기화 로직을 Core로 분리한다.
 - [ ]  `MainWindow`에 있는 도메인 및 데이터 로직을 공통 코드로 옮기고, UI와 플랫폼 기능은 각 앱 프로젝트에서 연결한다.
 - [ ]  Windows Credential Manager, loopback `HttpListener` OAuth, 레지스트리, EXE 플레이어 실행 등 Windows 전용 코드를 플랫폼 서비스 인터페이스 뒤로 분리한다.
-- [ ]  Android에는 패키지명과 서명 인증서에 맞춘 Android OAuth 클라이언트를 등록하고, Android 보안 저장소에 사용자 토큰을 보관한다. Desktop Client Secret은 Android 앱에 포함하지 않는다.
+- [X]  Android Google 계정 인증은 Play Services Identity를 통해 요청하고 Drive 권한 토큰을 사용한다. Desktop Client Secret은 Android 앱에 포함하지 않는다.
+- [ ]  Google Cloud의 Android OAuth 클라이언트에 배포 APK의 패키지명·서명 인증서를 등록하고, 배포용 계정으로 인증·Drive 접근을 확인한다.
 - [ ]  파일 접근은 Android 파일 선택기와 `content://` URI·스트림을 사용하고 앱 전용 저장소에 데이터를 둔다. Windows 절대 경로를 Android에서 유효한 경로로 간주하지 않는다.
 - [ ]  클라우드 동기화에는 영상 파일 자체를 올리지 않고, PC의 `DesktopLocalFilePath`와 Android의 `AndroidLocalFileUri` 참조를 별도 필드로 저장한다. 각 플랫폼은 자기 필드만 사용하며 다른 플랫폼의 참조를 보존한다.
 - [X]  모바일 화면 크기를 기존 데스크톱 화면과 최대한 비슷하게 탐색·카드 UI를 구성한다.
-- [ ]  Android 개발 시작 시 .NET Android workload, Android SDK, JDK를 준비하고 Rider 에뮬레이터 및 USB 연결 실기기에서 빌드·실행을 확인한다.
-- [ ]  테스트 배포는 APK로 확인하고, 스토어 배포 단계에서 서명 키 보관 및 AAB 생성 절차를 추가한다.
+- [X]  .NET Android workload, Android SDK, JDK를 준비하고 Rider에서 USB 연결 실기기 빌드·실행을 확인한다.
+- [X]  실기기 테스트용 ARM64 APK를 생성하고 서명을 확인한다.
+- [ ]  스토어 배포 단계에서 배포용 서명 키 보관 및 AAB 생성 절차를 추가한다.
 
 ## 날짜 입력 달력 — 완료
 
@@ -135,7 +147,7 @@
 - [X]  자동 확인 간격은 설정 화면에서 시·분·초 입력란으로 조정하며, 기본값은 90초다.
 - [X]  주기 확인에는 저장된 파일 ID로 Drive API 메타데이터 조회를 사용하고, API 요청 한도를 고려해 간격을 조정할 수 있게 한다.
 - [ ]  Android 백그라운드 실행 제약을 고려하고 실시간 동기화를 보장한다고 가정하지 않는다.
-- [ ]  Android 호스트 프로젝트와 플랫폼별 OAuth 클라이언트를 추가한다. 현재 구현은 Windows 데스크톱 OAuth와 Windows Credential Manager만 지원한다.
+- [X]  Android 호스트 프로젝트와 Play Services Identity 기반 Google 인증, Drive API 동기화를 구현한다. Windows는 데스크톱 OAuth와 Windows Credential Manager를 사용하고 Android는 Play Services가 인증 권한을 관리한다.
 - [ ]  개발자가 Google Cloud 프로젝트와 Drive API를 준비한다. 앱에는 서비스 계정 개인 키를 포함하지 않고, Android용 Client Secret도 포함하지 않는다.
 - [ ]  일반 사용자가 별도 Cloud 프로젝트를 만들도록 요구하지 않는 구조를 검토한다. 배포 시 OAuth 동의 화면·테스트 사용자·검증 요건과 `drive.file` 최소 권한 범위의 실제 파일 접근 흐름을 확인한다.
 
