@@ -41,6 +41,8 @@ packages/
 .idea/**/shelf/
 .idea/**/contentModel.xml
 .idea/**/projectSettingsUpdater.xml
+.idea/**/deploymentTargetSelector.xml
+.idea/**/libraries/
 *.iml
 /_ReSharper.Caches/
 
