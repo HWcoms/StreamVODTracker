@@ -1,6 +1,8 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
@@ -58,6 +60,12 @@ public sealed class SettingsWindow : Window
         _settingsStore = settingsStore;
         _syncGoogleDrive = syncGoogleDrive;
         _setDriveCheckInterval = setDriveCheckInterval;
+        AddHandler(InputElement.KeyDownEvent, (_, args) =>
+        {
+            if (args.Key != Key.Escape) return;
+            args.Handled = true;
+            Close();
+        }, RoutingStrategies.Tunnel);
         Title = "설정";
         Width = 560;
         Height = 720;

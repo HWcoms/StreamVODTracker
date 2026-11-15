@@ -66,6 +66,8 @@ internal sealed class AndroidHomeView : UserControl
     private string? _selectedChannelKey;
     private bool _isSettingsActive;
     private bool _isMemoEditorActive;
+    private Action? _cancelMemoEditor;
+    private double _settingsReturnScrollOffset;
     private bool _showThumbnails = true;
     private bool _isLandscapeLayout;
     private bool _showFavoritesOnly;
@@ -196,11 +198,7 @@ internal sealed class AndroidHomeView : UserControl
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center
         };
-        channelBackButton.Click += (_, _) =>
-        {
-            _selectedChannelKey = null;
-            ShowLibrary();
-        };
+        channelBackButton.Click += (_, _) => HandleHeaderBack();
         _channelBackButton = channelBackButton;
         var pageTitleRow = new Grid
         {
@@ -303,7 +301,7 @@ internal sealed class AndroidHomeView : UserControl
         ShowLibrary();
     }
 
-    private void ShowLibrary()
+    private void ShowLibrary(bool autoRefreshSelectedChannelVods = true)
     {
         _loadMoreMediaCards = null;
         ReleaseMediaThumbnailVisuals();
@@ -338,7 +336,7 @@ internal sealed class AndroidHomeView : UserControl
             {
                 _pageTitle.Text = selectedChannel.Channel.Name;
                 if (_channelBackButton is not null) _channelBackButton.IsVisible = true;
-                _pageHost.Content = BuildChannelDetails(selectedChannel);
+                _pageHost.Content = BuildChannelDetails(selectedChannel, autoRefreshOnOpen: autoRefreshSelectedChannelVods);
                 return;
             }
             _selectedChannelKey = null;
@@ -1305,6 +1303,7 @@ internal sealed class AndroidHomeView : UserControl
         void ReturnToLibraryPage()
         {
             _isMemoEditorActive = false;
+            _cancelMemoEditor = null;
             _pageHost.Content = previousPage;
             _activePageScrollViewer = previousScrollViewer;
             _pageTitle.Text = previousPageTitle;
@@ -1330,6 +1329,7 @@ internal sealed class AndroidHomeView : UserControl
         {
             ReturnToLibraryPage();
         });
+        _cancelMemoEditor = ReturnToLibraryPage;
         var saveButton = MakeButton("\uC800\uC7A5", () =>
         {
             var memo = editor.Text ?? string.Empty;
@@ -1794,6 +1794,7 @@ internal sealed class AndroidHomeView : UserControl
 
     private void ShowSettings()
     {
+        _settingsReturnScrollOffset = _activePageScrollViewer?.Offset.Y ?? 0;
         ReleaseMediaThumbnailVisuals();
         _isSettingsActive = true;
         UpdateDrawerSelection();
@@ -2286,13 +2287,43 @@ internal sealed class AndroidHomeView : UserControl
 
     private void ToggleSettings()
     {
-        if (_isSettingsActive) ShowLibrary();
+        if (_isSettingsActive) ReturnFromSettings();
         else ShowSettings();
         SetDrawerOpen(false);
     }
 
+    private void HandleHeaderBack()
+    {
+        if (_isMemoEditorActive)
+        {
+            _cancelMemoEditor?.Invoke();
+            return;
+        }
+
+        if (_isSettingsActive)
+        {
+            ReturnFromSettings();
+            return;
+        }
+
+        _selectedChannelKey = null;
+        ShowLibrary();
+    }
+
+    private void ReturnFromSettings()
+    {
+        ShowLibrary(autoRefreshSelectedChannelVods: false);
+        Dispatcher.UIThread.Post(() => RestoreLibraryScrollOffset(_settingsReturnScrollOffset), DispatcherPriority.Background);
+    }
+
     internal bool HandleSystemBack()
     {
+        if (_isMemoEditorActive)
+        {
+            _cancelMemoEditor?.Invoke();
+            return true;
+        }
+
         if (_drawerOverlay?.IsVisible == true)
         {
             SetDrawerOpen(false);
@@ -2301,7 +2332,7 @@ internal sealed class AndroidHomeView : UserControl
 
         if (_isSettingsActive)
         {
-            ShowLibrary();
+            ReturnFromSettings();
             return true;
         }
 
@@ -2312,7 +2343,10 @@ internal sealed class AndroidHomeView : UserControl
             return true;
         }
 
-        return false;
+        // Keep the activity alive if the current page state was lost or the back
+        // event arrives while the library root is being rebuilt.
+        ShowLibrary();
+        return true;
     }
 
     private async Task ImportCsvAsync()

@@ -1571,6 +1571,12 @@ public partial class MainWindow : Window
                 }
             }
         };
+        dialog.AddHandler(InputElement.KeyDownEvent, (_, args) =>
+        {
+            if (args.Key != Key.Escape) return;
+            args.Handled = true;
+            dialog.Close(false);
+        }, RoutingStrategies.Tunnel);
         save.Click += (_, _) => dialog.Close(true);
         cancel.Click += (_, _) => dialog.Close(false);
         if (await dialog.ShowDialog<bool>(this))

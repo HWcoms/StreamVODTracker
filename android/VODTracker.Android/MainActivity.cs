@@ -1,6 +1,7 @@
 using Android.App;
 using Android.Content.PM;
 using Android.OS;
+using Android.Window;
 using Android.Content;
 using Avalonia.Android;
 using Android.Gms.Auth.Api.Identity;
@@ -22,6 +23,7 @@ public sealed class MainActivity : AvaloniaMainActivity
     private const int DriveAuthorizationRequestCode = 7314;
     private TaskCompletionSource<AuthorizationResult>? _driveAuthorizationCompletion;
     private IAuthorizationClient? _authorizationClient;
+    private BackInvokedCallback? _backInvokedCallback;
     public static MainActivity? Current { get; private set; }
 
     public Task<AuthorizationResult> AuthorizeGoogleDriveAsync()
@@ -103,6 +105,16 @@ public sealed class MainActivity : AvaloniaMainActivity
         base.OnCreate(savedInstanceState);
         Current = this;
 
+        if (Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
+        {
+            _backInvokedCallback = new BackInvokedCallback(() =>
+            {
+                if (AndroidApp.MainView?.HandleSystemBack() != true)
+                    base.OnBackPressed();
+            });
+            OnBackInvokedDispatcher.RegisterOnBackInvokedCallback(1_000_000, _backInvokedCallback);
+        }
+
         // Keep the Avalonia content inside the system window area so the
         // bottom navigation controls do not cover the last row of the UI.
         if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
@@ -111,6 +123,12 @@ public sealed class MainActivity : AvaloniaMainActivity
 
     protected override void OnDestroy()
     {
+        if (_backInvokedCallback is not null && Build.VERSION.SdkInt >= BuildVersionCodes.Tiramisu)
+        {
+            OnBackInvokedDispatcher.UnregisterOnBackInvokedCallback(_backInvokedCallback);
+            _backInvokedCallback.Dispose();
+            _backInvokedCallback = null;
+        }
         _driveAuthorizationCompletion?.TrySetCanceled();
         _driveAuthorizationCompletion = null;
         if (ReferenceEquals(Current, this)) Current = null;
@@ -150,6 +168,11 @@ public sealed class MainActivity : AvaloniaMainActivity
         if (AndroidApp.MainView?.HandleSystemBack() == true) return;
         base.OnBackPressed();
     }
+}
+
+internal sealed class BackInvokedCallback(Action onBackInvoked) : Java.Lang.Object, IOnBackInvokedCallback
+{
+    public void OnBackInvoked() => onBackInvoked();
 }
 
 internal sealed class DriveAuthorizationSuccessListener(Action<AuthorizationResult> onSuccess)
