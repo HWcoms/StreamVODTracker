@@ -45,8 +45,9 @@ internal sealed class AndroidDriveSyncService(AndroidLibraryStore libraryStore, 
         await _syncLock.WaitAsync(cancellationToken);
         try
         {
-            var local = libraryStore.LoadAll();
             var remote = await _drive.DownloadLibraryAsync(accessToken, cancellationToken);
+            // Reload after network I/O so edits made locally while Drive was downloading are included.
+            var local = libraryStore.LoadAll();
             var merged = PreserveDeviceOnlyData(DriveLibraryMerger.Merge(local, remote), local);
             await libraryStore.ReplaceFromDriveAsync(merged);
             await _drive.UploadLibraryAsync(accessToken, merged, cancellationToken);
