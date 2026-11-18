@@ -6,6 +6,10 @@
 
 <img width="1282" height="852" alt="StreamVODTracker 화면 미리보기" src="https://github.com/user-attachments/assets/69a39659-7f29-4e0b-a39d-2d6778a4e97c" />
 
+## 개인 토큰 생성 가이드
+
+[Google Drive 개인 OAuth 설정 및 토큰 발급 안내](PERSONAL-TOKEN-GUIDE.md)
+
 ## 주요 기능
 
 - 치지직 및 SOOP 채널과 채널별 VOD 목록 관리

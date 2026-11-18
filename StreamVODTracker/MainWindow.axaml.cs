@@ -1465,16 +1465,9 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
     }
 
-    private void GridView_Click(object? sender, RoutedEventArgs e)
+    private void ViewModeSwitch_Click(object? sender, RoutedEventArgs e)
     {
-        _isListView = false;
-        UpdateViewButtonStates();
-        UpdateCards();
-    }
-
-    private void ListView_Click(object? sender, RoutedEventArgs e)
-    {
-        _isListView = true;
+        _isListView = !_isListView;
         UpdateViewButtonStates();
         UpdateCards();
     }
@@ -1499,11 +1492,11 @@ public partial class MainWindow : Window
     private void UpdateViewButtonStates()
     {
         ThumbnailViewButton.Classes.Set("selected", _showThumbnails);
-        GridViewButton.Classes.Set("selected", !_isListView);
-        ListViewButton.Classes.Set("selected", _isListView);
+        ViewModeSwitch.Classes.Set("grid-selected", !_isListView);
+        ViewModeSwitch.Classes.Set("list-selected", _isListView);
+        Grid.SetColumn(ViewModeThumb, _isListView ? 0 : 1);
         ToolTip.SetTip(ThumbnailViewButton, _showThumbnails ? "썸네일 숨기기" : "썸네일 표시");
-        ToolTip.SetTip(GridViewButton, _isListView ? "그리드 보기" : "현재 그리드 보기");
-        ToolTip.SetTip(ListViewButton, _isListView ? "현재 리스트 보기" : "리스트 보기");
+        ToolTip.SetTip(ViewModeSwitch, _isListView ? "현재 리스트 보기 · 클릭하면 그리드 보기" : "현재 그리드 보기 · 클릭하면 리스트 보기");
     }
 
     private void FavoriteFilter_Click(object? sender, RoutedEventArgs e)
@@ -3537,6 +3530,9 @@ public partial class MainWindow : Window
             (selectedPlatform is null || card.PlatformLabel == selectedPlatform) &&
             (string.IsNullOrWhiteSpace(query) ||
              card.Title.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+             card.Memo.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+             card.OnlineUrl?.Contains(query, StringComparison.OrdinalIgnoreCase) == true ||
+             card.ChannelUrl?.Contains(query, StringComparison.OrdinalIgnoreCase) == true ||
              card.PublishedAt?.ToLocalTime().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
                  .Contains(normalizedDateQuery!, StringComparison.OrdinalIgnoreCase) == true ||
              (digitDateQuery.Length >= 4 && card.PublishedAt?.ToLocalTime().ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture)
@@ -3611,8 +3607,7 @@ public partial class MainWindow : Window
         DirectAddButton.IsEnabled = hasSingleChannelContext;
         ThumbnailViewButton.IsVisible = hasChannelScope;
         FavoriteFilterButton.IsVisible = hasChannelScope;
-        GridViewButton.IsVisible = hasChannelScope;
-        ListViewButton.IsVisible = hasChannelScope;
+        ViewModeSwitch.IsVisible = hasChannelScope;
         ShowAllChannelsCard.Classes.Set("selected", _isShowAllChannels);
     }
 
@@ -3735,6 +3730,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     public string LastPositionRemainderSeconds { get => _lastPositionRemainderSeconds; set => SetLastPositionPart("seconds", value); }
     public bool IsLastPositionVisible => WatchStatusLabel == "시청중";
     public string Memo => _memo;
+    public string MemoDisplayLabel => string.IsNullOrWhiteSpace(_memo) ? "메모 추가" : _memo.Replace("\r", " ").Replace("\n", " ").Trim();
     public bool IsFavorite
     {
         get => _isFavorite;
@@ -3760,6 +3756,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         _memo = normalized;
         _updatedAt = DateTimeOffset.UtcNow;
         OnPropertyChanged(nameof(Memo));
+        OnPropertyChanged(nameof(MemoDisplayLabel));
         OnPropertyChanged(nameof(MemoOverlayText));
         OnPropertyChanged(nameof(MemoIconForeground));
         OnPropertyChanged(nameof(UpdatedAt));
