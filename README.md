@@ -4,7 +4,7 @@
 
 ## 화면 미리보기
 
-<img width="1282" height="852" alt="StreamVODTracker 화면 미리보기" src="https://github.com/user-attachments/assets/69a39659-7f29-4e0b-a39d-2d6778a4e97c" />
+![StreamVODTracker 앱 스크린샷](assets/readme-screenshot.png)
 
 ## 개인 토큰 생성 가이드
 
