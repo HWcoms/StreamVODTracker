@@ -3,6 +3,7 @@ using Android.Content.PM;
 using Android.OS;
 using Android.Window;
 using Android.Content;
+using Android.Views;
 using Avalonia.Android;
 using Android.Gms.Auth.Api.Identity;
 using Android.Gms.Common;
@@ -109,6 +110,7 @@ public sealed class MainActivity : AvaloniaMainActivity
         {
             _backInvokedCallback = new BackInvokedCallback(() =>
             {
+                if (HideKeyboardIfVisible()) return;
                 if (AndroidApp.MainView?.HandleSystemBack() != true)
                     base.OnBackPressed();
             });
@@ -165,8 +167,19 @@ public sealed class MainActivity : AvaloniaMainActivity
 
     public override void OnBackPressed()
     {
+        if (HideKeyboardIfVisible()) return;
         if (AndroidApp.MainView?.HandleSystemBack() == true) return;
         base.OnBackPressed();
+    }
+
+    private bool HideKeyboardIfVisible()
+    {
+        if (Build.VERSION.SdkInt < BuildVersionCodes.R ||
+            Window?.DecorView?.RootWindowInsets?.IsVisible(WindowInsets.Type.Ime()) != true)
+            return false;
+
+        Window?.InsetsController?.Hide(WindowInsets.Type.Ime());
+        return true;
     }
 }
 

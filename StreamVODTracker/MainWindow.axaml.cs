@@ -53,7 +53,8 @@ public partial class MainWindow : Window
     private bool _isSyncingDrive;
     private bool _isCheckingDrive;
     private bool _driveUploadPending;
-    private readonly DispatcherTimer _driveUploadTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private int _driveUploadRetryCount;
+    private readonly DispatcherTimer _driveUploadTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _driveCheckTimer = new();
     private bool _isWindowActive;
     private static readonly SemaphoreSlim ThumbnailLoadLimiter = new(4);
@@ -285,12 +286,18 @@ public partial class MainWindow : Window
                                       !DriveSnapshotsEqual(previousSnapshot, snapshot);
             _vodRepository.Save(channel, cards);
             _lastSavedDriveSnapshots[key] = snapshot;
-            if (hasDriveDataChanged && !_isSyncingDrive && _driveSyncClient is not null)
+            if (hasDriveDataChanged && _driveSyncClient is not null)
             {
                 _driveUploadPending = true;
-                ShowGoogleDriveSyncProgress();
-                _driveUploadTimer.Stop();
-                _driveUploadTimer.Start();
+                _driveUploadRetryCount = 0;
+                _driveUploadTimer.Interval = TimeSpan.FromMilliseconds(500);
+                AppLogger.Info("DriveSync", "Local card change queued for automatic sync; delayMs=500");
+                if (!_isSyncingDrive)
+                {
+                    ShowGoogleDriveSyncProgress();
+                    _driveUploadTimer.Stop();
+                    _driveUploadTimer.Start();
+                }
             }
         }
     }
@@ -338,13 +345,15 @@ public partial class MainWindow : Window
     private async void DriveUploadTimer_Tick(object? sender, EventArgs e)
     {
         _driveUploadTimer.Stop();
-        if (_driveSyncClient is null || !_driveUploadPending) return;
+        if (_driveSyncClient is null || !_driveUploadPending || _isSyncingDrive) return;
+        var credentials = OperatingSystem.IsWindows() ? WindowsCredentialVault.ReadGoogleDrive() : null;
+        if (credentials is null) return;
         _driveUploadPending = false;
-        ShowGoogleDriveSyncProgress();
         try
         {
-            await _driveSyncClient.UploadLibraryAsync(_localDatabase.LoadAll());
-            ShowDriveSyncNotification("Google Drive와 동기화 완료");
+            await SyncGoogleDriveLibraryAsync(credentials, "local-change");
+            _driveUploadRetryCount = 0;
+            _driveUploadTimer.Interval = TimeSpan.FromMilliseconds(500);
         }
         catch (Exception exception)
         {
@@ -360,7 +369,7 @@ public partial class MainWindow : Window
         {
             var credentials = WindowsCredentialVault.ReadGoogleDrive();
             if (credentials is null || string.IsNullOrWhiteSpace(_settingsStore.LoadGoogleOAuthClientId())) return;
-            await SyncGoogleDriveLibraryAsync(credentials);
+            await SyncGoogleDriveLibraryAsync(credentials, "startup");
         }
         catch (Exception exception)
         {
@@ -369,8 +378,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<int> SyncGoogleDriveLibraryAsync(GoogleDriveCredentials credentials)
+    private async Task<int> SyncGoogleDriveLibraryAsync(GoogleDriveCredentials credentials, string trigger = "manual")
     {
+        var syncTimer = Stopwatch.StartNew();
         var clientId = _settingsStore.LoadGoogleOAuthClientId();
         if (string.IsNullOrWhiteSpace(clientId)) throw new InvalidOperationException("Enter the Google OAuth desktop client ID in Settings.");
         _isSyncingDrive = true;
@@ -378,13 +388,23 @@ public partial class MainWindow : Window
         _driveUploadTimer.Stop();
         var client = new GoogleDriveSyncClient(clientId, _settingsStore.LoadGoogleOAuthClientSecret(), credentials);
         _driveSyncClient = client;
+        AppLogger.Info("DriveSync", $"Sync started; trigger={trigger}; intervalSeconds={_settingsStore.LoadDriveCheckIntervalSeconds()}");
         ShowGoogleDriveSyncProgress();
         try
         {
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
             var local = _localDatabase.LoadAll();
+            var downloadTimer = Stopwatch.StartNew();
             var remote = await client.DownloadLibraryAsync();
+            downloadTimer.Stop();
+            AppLogger.Info("DriveSync", $"Drive download completed; trigger={trigger}; durationMs={downloadTimer.ElapsedMilliseconds}; localChannels={local.Count}; driveChannels={remote.Count}");
+            foreach (var line in DriveLibraryDiagnostics.DescribeDifferences("desktop.local-vs-drive", local, remote))
+                AppLogger.Info("DriveSync", line);
             var localByKey = local.ToDictionary(item => GetSyncChannelKey(item.Channel.Platform, item.Channel.ChannelId), StringComparer.OrdinalIgnoreCase);
             var merged = DriveLibraryMerger.Merge(local, remote);
+            foreach (var line in DriveLibraryDiagnostics.DescribeDifferences("desktop.merged-vs-drive", merged, remote))
+                AppLogger.Info("DriveSync", line);
 
             foreach (var saved in merged)
             {
@@ -409,24 +429,84 @@ public partial class MainWindow : Window
                 foreach (var card in cards) card.Dispose();
             }
 
-            await client.UploadLibraryAsync(merged);
-            foreach (var channel in _channels) channel.Dispose();
-            foreach (var card in _allCards) card.Dispose();
-            _channels.Clear();
-            _allCards.Clear();
-            _visibleChannels.Clear();
-            _visibleCards.Clear();
-            _selectedChannel = null;
-            LoadLocalDatabase();
-            UpdateCards();
-            UpdateVisibleChannels();
+            var uploadTimer = Stopwatch.StartNew();
+            if (DriveLibraryCodec.HasSameContent(merged, remote))
+            {
+                uploadTimer.Stop();
+                AppLogger.Info("DriveSync", $"Upload skipped; merged content already matches Drive; attempts={attempt}");
+            }
+            else if (!await client.TryUploadIfUnchangedAsync(merged))
+            {
+                AppLogger.Info("DriveSync", $"Drive changed before upload; retrying merge; attempt={attempt}");
+                continue;
+            }
+            uploadTimer.Stop();
+            syncTimer.Stop();
+            AppLogger.Info("DriveSync", $"Sync completed; trigger={trigger}; channels={merged.Count}; uploadMs={uploadTimer.ElapsedMilliseconds}; attempts={attempt}; totalMs={syncTimer.ElapsedMilliseconds}");
+            if (!DriveLibraryCodec.HasSameContent(local, merged))
+            {
+                var selectedChannelKeys = _channels
+                    .Where(channel => _selectedChannelUrls.Contains(channel.ChannelUrl))
+                    .Select(channel => GetSyncChannelKey(channel.Platform, channel.ChannelId))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var selectionAnchorKey = _channelSelectionAnchor is null
+                    ? null
+                    : GetSyncChannelKey(_channelSelectionAnchor.Platform, _channelSelectionAnchor.ChannelId);
+                var showAllChannels = _isShowAllChannels;
+
+                foreach (var channel in _channels) channel.Dispose();
+                foreach (var card in _allCards) card.Dispose();
+                _channels.Clear();
+                _allCards.Clear();
+                _visibleChannels.Clear();
+                _visibleCards.Clear();
+                _selectedChannel = null;
+                LoadLocalDatabase();
+
+                _selectedChannelUrls.Clear();
+                foreach (var channel in _channels)
+                {
+                    channel.IsSelected = selectedChannelKeys.Contains(GetSyncChannelKey(channel.Platform, channel.ChannelId));
+                    if (channel.IsSelected) _selectedChannelUrls.Add(channel.ChannelUrl);
+                }
+                _selectedChannel = _channels.FirstOrDefault(channel => channel.IsSelected);
+                _channelSelectionAnchor = selectionAnchorKey is null
+                    ? null
+                    : _channels.FirstOrDefault(channel => GetSyncChannelKey(channel.Platform, channel.ChannelId) == selectionAnchorKey);
+                _isShowAllChannels = showAllChannels;
+                ShowAllChannelsCard.Classes.Set("selected", showAllChannels);
+                UpdateCards();
+                UpdateVisibleChannels();
+            }
             ShowDriveSyncNotification("Google Drive와 동기화 완료");
+            _driveUploadRetryCount = 0;
+            _driveUploadTimer.Interval = TimeSpan.FromMilliseconds(500);
             return merged.Count;
+            }
+
+            throw new InvalidOperationException("Google Drive kept changing during sync. Upload was deferred; please sync again.");
+        }
+        catch (Exception exception)
+        {
+            syncTimer.Stop();
+            AppLogger.Error("DriveSync", $"Sync failed; trigger={trigger}; totalMs={syncTimer.ElapsedMilliseconds}", exception);
+            if (_driveSyncClient is not null)
+            {
+                _driveUploadPending = true;
+                _driveUploadRetryCount = Math.Min(_driveUploadRetryCount + 1, 5);
+                _driveUploadTimer.Interval = TimeSpan.FromSeconds(Math.Min(60, 2 << _driveUploadRetryCount));
+            }
+            throw;
         }
         finally
         {
             StopGoogleDriveSyncAnimation();
             _isSyncingDrive = false;
+            if (_driveUploadPending && _driveSyncClient is not null)
+            {
+                _driveUploadTimer.Stop();
+                _driveUploadTimer.Start();
+            }
         }
     }
 
@@ -1933,7 +2013,9 @@ public partial class MainWindow : Window
         {
             try
             {
-                var duration = await FetchChzzkVodDurationAsync(onlineUrl, card.SetDurationDiagnostic);
+                var duration = IsYouTubeUrl(onlineUrl)
+                    ? await FetchYouTubeDurationAsync(onlineUrl, card.SetDurationDiagnostic)
+                    : await FetchChzzkVodDurationAsync(onlineUrl, card.SetDurationDiagnostic);
                 if (duration is > 0 && string.Equals(card.OnlineUrl, onlineUrl, StringComparison.OrdinalIgnoreCase))
                 {
                     card.SetDuration(duration);
@@ -2005,7 +2087,9 @@ public partial class MainWindow : Window
                 await Task.WhenAll(channelCards.Select(async card =>
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var duration = await FetchChzzkVodDurationAsync(card.OnlineUrl, card.SetDurationDiagnostic, cancellationToken);
+                    var duration = IsYouTubeUrl(card.OnlineUrl)
+                        ? await FetchYouTubeDurationAsync(card.OnlineUrl, card.SetDurationDiagnostic, cancellationToken)
+                        : await FetchChzzkVodDurationAsync(card.OnlineUrl, card.SetDurationDiagnostic, cancellationToken);
                     if (duration is > 0) card.SetDuration(duration);
                     else if (card.HasLocalFilePath) await DetectLocalDurationAsync(card);
                 }));
@@ -2083,6 +2167,43 @@ public partial class MainWindow : Window
             AppLogger.Warn("Duration", $"CHZZK VOD={videoId}; direct duration lookup failed: {exception.GetType().Name}: {exception.Message}");
             return null;
         }
+    }
+
+    private static bool IsYouTubeUrl(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+        (uri.Host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith(".youtube.com", StringComparison.OrdinalIgnoreCase) ||
+         uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("youtube-nocookie.com", StringComparison.OrdinalIgnoreCase));
+
+    private static async Task<double?> FetchYouTubeDurationAsync(string? videoUrl, Action<string>? reportDiagnostic = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Uri.TryCreate(videoUrl, UriKind.Absolute, out var uri)) return null;
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var videoId = uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase)
+            ? segments.FirstOrDefault()
+            : uri.Query.TrimStart('?').Split('&').Select(part => part.Split('=', 2))
+                .FirstOrDefault(pair => pair.Length == 2 && pair[0] == "v")?.ElementAtOrDefault(1)
+              ?? (segments.Length > 1 && new[] { "shorts", "embed", "live" }.Contains(segments[0], StringComparer.OrdinalIgnoreCase) ? segments[1] : null);
+        if (string.IsNullOrWhiteSpace(videoId)) return null;
+        reportDiagnostic?.Invoke("조회 중");
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+            using var response = await client.GetAsync($"https://www.youtube.com/watch?v={Uri.EscapeDataString(videoId)}", cancellationToken);
+            response.EnsureSuccessStatusCode();
+            var html = await response.Content.ReadAsStringAsync(cancellationToken);
+            var match = System.Text.RegularExpressions.Regex.Match(html, "\\\"lengthSeconds\\\"\\s*:\\s*\\\"(?<seconds>\\d+)\\\"");
+            if (match.Success && double.TryParse(match.Groups["seconds"].Value, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var seconds) && seconds > 0) return seconds;
+            reportDiagnostic?.Invoke("길이 없음");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            reportDiagnostic?.Invoke("조회 오류");
+            AppLogger.Warn("Duration", $"YouTube video={videoId}; duration lookup failed: {exception.GetType().Name}");
+        }
+        return null;
     }
 
     private static async Task<double?> FetchSoopVodDurationAsync(string? vodUrl, Action<string>? reportDiagnostic = null, CancellationToken cancellationToken = default)
@@ -2407,6 +2528,27 @@ public partial class MainWindow : Window
         finally
         {
             if (button is not null) button.IsEnabled = true;
+        }
+
+        // A manual VOD refresh also reconciles this device's full library with Drive.
+        // The regular sync path handles merging, conflict checks, and no-op upload skips.
+        if (_isSyncingDrive)
+        {
+            _driveUploadPending = true;
+            return;
+        }
+
+        var credentials = OperatingSystem.IsWindows() ? WindowsCredentialVault.ReadGoogleDrive() : null;
+        if (credentials is not null && !string.IsNullOrWhiteSpace(_settingsStore.LoadGoogleOAuthClientId()))
+        {
+            try
+            {
+                await SyncGoogleDriveLibraryAsync(credentials, "vod-refresh");
+            }
+            catch (Exception exception)
+            {
+                ShowDriveSyncNotification($"Google Drive sync failed: {exception.Message}", isError: true);
+            }
         }
     }
 
@@ -3084,7 +3226,8 @@ public partial class MainWindow : Window
                 ShowDriveSyncNotification("Google Drive 변경 확인 완료 (계정 연결 필요)", isError: true);
                 return;
             }
-            await SyncGoogleDriveLibraryAsync(credentials);
+            AppLogger.Info("DriveSync", "Remote change detected by periodic check.");
+            await SyncGoogleDriveLibraryAsync(credentials, "automatic-change-check");
         }
         catch (Exception exception)
         {
@@ -3174,7 +3317,8 @@ public partial class MainWindow : Window
     private async void OpenSettings_Click(object? sender, RoutedEventArgs e)
     {
         if (!OperatingSystem.IsWindows()) return;
-        var settings = new SettingsWindow(_isDarkTheme, ApplyTheme, _settingsStore, SyncGoogleDriveLibraryAsync, SetDriveCheckInterval);
+        var settings = new SettingsWindow(_isDarkTheme, ApplyTheme, _settingsStore,
+            credentials => SyncGoogleDriveLibraryAsync(credentials, "manual-button"), SetDriveCheckInterval);
         await settings.ShowDialog(this);
     }
 
@@ -3738,7 +3882,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         {
             if (_isFavorite == value) return;
             _isFavorite = value;
-            _updatedAt = DateTimeOffset.UtcNow;
+            _updatedAt = NextUpdatedAt(_updatedAt);
             OnPropertyChanged(nameof(IsFavorite));
             OnPropertyChanged(nameof(FavoriteGlyph));
             OnPropertyChanged(nameof(FavoriteForeground));
@@ -3754,7 +3898,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         var normalized = memo.Trim();
         if (string.Equals(_memo, normalized, StringComparison.Ordinal)) return;
         _memo = normalized;
-        _updatedAt = DateTimeOffset.UtcNow;
+        _updatedAt = NextUpdatedAt(_updatedAt);
         OnPropertyChanged(nameof(Memo));
         OnPropertyChanged(nameof(MemoDisplayLabel));
         OnPropertyChanged(nameof(MemoOverlayText));
@@ -3814,7 +3958,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         if (sourceChanged)
             SetDuration(null);
         _vodId = normalizedVodId;
-        _updatedAt = DateTimeOffset.UtcNow;
+        _updatedAt = NextUpdatedAt(_updatedAt);
         RefreshSourceLabels();
         OnPropertyChanged(nameof(Title));
         OnPropertyChanged(nameof(PublishedAt));
@@ -3849,11 +3993,16 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
     private static bool IsHttpUrl(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
         (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
     private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static DateTimeOffset NextUpdatedAt(DateTimeOffset previous)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return now <= previous ? previous.AddTicks(1) : now;
+    }
 
     public void CycleWatchStatus()
     {
         _watchStatusIndex = (_watchStatusIndex + 1) % WatchStatuses.Length;
-        _updatedAt = DateTimeOffset.UtcNow;
+        _updatedAt = NextUpdatedAt(_updatedAt);
         OnPropertyChanged(nameof(WatchStatusLabel));
         OnPropertyChanged(nameof(UpdatedAt));
         OnPropertyChanged(nameof(WatchStatusBackground));
@@ -3969,9 +4118,11 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         }
         if (!int.TryParse(_lastPositionHours, out var hours) || !int.TryParse(_lastPositionMinutes, out var minutes) ||
             !int.TryParse(_lastPositionRemainderSeconds, out var seconds) || minutes > 59 || seconds > 59) return;
-        _lastPositionSeconds = hours * 3600d + minutes * 60d + seconds;
+        var nextPositionSeconds = hours * 3600d + minutes * 60d + seconds;
+        if (Math.Abs(_lastPositionSeconds - nextPositionSeconds) < 0.5) return;
+        _lastPositionSeconds = nextPositionSeconds;
         _hasPendingPositionInput = true;
-        _updatedAt = DateTimeOffset.UtcNow;
+        _updatedAt = NextUpdatedAt(_updatedAt);
         OnPropertyChanged(nameof(LastPositionSeconds));
         OnPropertyChanged(nameof(PlaybackPositionSliderValue));
         OnPropertyChanged(nameof(PlaybackProgressRatio));
@@ -4005,7 +4156,7 @@ public sealed class MediaCard : System.ComponentModel.INotifyPropertyChanged, ID
         if (Math.Abs(_lastPositionSeconds - seconds) < 0.5) return;
         _lastPositionSeconds = seconds;
         SetLastPositionPartsFromSeconds(seconds);
-        _updatedAt = DateTimeOffset.UtcNow;
+        _updatedAt = NextUpdatedAt(_updatedAt);
         if (_isPositionSliderInteracting) _positionSliderHasPendingChanges = true;
         OnPropertyChanged(nameof(LastPositionSeconds));
         OnPropertyChanged(nameof(PlaybackPositionSliderValue));

@@ -186,7 +186,7 @@ internal sealed class AndroidLibraryStore
             if (existing.Media.FirstOrDefault(item => item.VodId.Equals(vodId, StringComparison.OrdinalIgnoreCase)) is not { } current ||
                 string.Equals(current.WatchStatus, watchStatus, StringComparison.Ordinal)) return;
 
-            UpdateMedia(channels, key, existing, vodId, item => item with { WatchStatus = watchStatus, UpdatedAt = DateTimeOffset.UtcNow });
+            UpdateMedia(channels, key, existing, vodId, item => item with { WatchStatus = watchStatus, UpdatedAt = NextUpdatedAt(item.UpdatedAt) });
         }
     }
 
@@ -200,7 +200,7 @@ internal sealed class AndroidLibraryStore
             if (existing.Media.FirstOrDefault(item => item.VodId.Equals(vodId, StringComparison.OrdinalIgnoreCase)) is not { } current ||
                 current.Favorite == favorite) return;
 
-            UpdateMedia(channels, key, existing, vodId, item => item with { Favorite = favorite, UpdatedAt = DateTimeOffset.UtcNow });
+            UpdateMedia(channels, key, existing, vodId, item => item with { Favorite = favorite, UpdatedAt = NextUpdatedAt(item.UpdatedAt) });
         }
     }
 
@@ -215,7 +215,7 @@ internal sealed class AndroidLibraryStore
             if (existing.Media.FirstOrDefault(item => item.VodId.Equals(vodId, StringComparison.OrdinalIgnoreCase)) is not { } current ||
                 string.Equals(current.Memo, memo, StringComparison.Ordinal)) return;
 
-            UpdateMedia(channels, key, existing, vodId, item => item with { Memo = memo, UpdatedAt = DateTimeOffset.UtcNow });
+            UpdateMedia(channels, key, existing, vodId, item => item with { Memo = memo, UpdatedAt = NextUpdatedAt(item.UpdatedAt) });
         }
     }
 
@@ -230,7 +230,7 @@ internal sealed class AndroidLibraryStore
             if (existing.Media.FirstOrDefault(item => item.VodId.Equals(vodId, StringComparison.OrdinalIgnoreCase)) is not { } current ||
                 Math.Abs(current.LastPositionSeconds - normalizedPosition) < 0.5) return;
 
-            UpdateMedia(channels, key, existing, vodId, item => item with { LastPositionSeconds = normalizedPosition, UpdatedAt = DateTimeOffset.UtcNow });
+            UpdateMedia(channels, key, existing, vodId, item => item with { LastPositionSeconds = normalizedPosition, UpdatedAt = NextUpdatedAt(item.UpdatedAt) });
         }
     }
 
@@ -247,6 +247,12 @@ internal sealed class AndroidLibraryStore
         _cachedChannels = channels.ToArray();
         QueueSave(_cachedChannels);
         LibraryChanged?.Invoke();
+    }
+
+    private static DateTimeOffset NextUpdatedAt(DateTimeOffset? previous)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return previous is { } old && now <= old ? old.AddTicks(1) : now;
     }
 
     private void QueueSave(IReadOnlyList<SavedChannelData> snapshot)

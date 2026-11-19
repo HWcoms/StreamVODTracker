@@ -54,7 +54,8 @@ internal sealed class AndroidHomeView : UserControl
     private Func<bool, Task>? _refreshCurrentChannelVods;
     private readonly DispatcherTimer _pullRefreshSpinnerTimer = new() { Interval = TimeSpan.FromMilliseconds(65) };
     private readonly DispatcherTimer _appNotificationTimer = new() { Interval = TimeSpan.FromSeconds(4) };
-    private readonly DispatcherTimer _driveUploadTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly DispatcherTimer _driveUploadTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private int _driveSyncRetryCount;
     private readonly DispatcherTimer _driveCheckTimer = new() { Interval = TimeSpan.FromSeconds(90) };
     private double _pullRefreshSpinnerAngle;
     private bool _isDriveSyncing;
@@ -270,12 +271,13 @@ internal sealed class AndroidHomeView : UserControl
         _driveUploadTimer.Tick += (_, _) =>
         {
             _driveUploadTimer.Stop();
-            _ = RunDriveSyncAsync(connectFirst: false, quiet: true);
+            global::Android.Util.Log.Debug("VODSync", $"automatic-upload-triggered pending={_driveUploadPending} retry={_driveSyncRetryPending}");
+            _ = RunDriveSyncAsync(connectFirst: false, quiet: false);
         };
         _driveCheckTimer.Tick += (_, _) =>
         {
             if (_driveSyncRetryPending || _driveUploadPending)
-                _ = RunDriveSyncAsync(connectFirst: false, quiet: true);
+                _ = RunDriveSyncAsync(connectFirst: false, quiet: false);
             else
                 _ = CheckDriveForChangesAsync();
         };
@@ -936,6 +938,11 @@ internal sealed class AndroidHomeView : UserControl
                         ShowNotification(resultText);
                     }
                 });
+
+                // Pull-to-refresh also reconciles the whole library with Drive. RunDriveSyncAsync
+                // stops the delayed local-upload timer first, so this does not double-upload.
+                if (refreshThumbnails && !string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail()))
+                    await RunDriveSyncAsync(connectFirst: false, quiet: false, refreshUiOnSuccess: true);
             }
             catch (Exception exception)
             {
@@ -1929,7 +1936,12 @@ internal sealed class AndroidHomeView : UserControl
     private void ScheduleDriveUpload()
     {
         if (string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail())) return;
+        var alreadyPending = _driveUploadPending;
         _driveUploadPending = true;
+        _driveSyncRetryCount = 0;
+        _driveUploadTimer.Interval = TimeSpan.FromMilliseconds(500);
+        global::Android.Util.Log.Debug("VODSync", "local-change-upload-scheduled delayMs=500");
+        if (!alreadyPending) ShowNotification("Google Drive 동기화 대기 중...");
         Dispatcher.UIThread.Post(() =>
         {
             if (_isDriveSyncing) return;
@@ -1963,12 +1975,15 @@ internal sealed class AndroidHomeView : UserControl
         _driveCheckTimer.Stop();
         _driveUploadPending = false;
         _driveSyncRetryPending = false;
+        if (!quiet) ShowNotification("Google Drive 동기화 중...");
         if (status is not null) status.Text = connectFirst ? "Google 계정 권한을 확인하는 중…" : "Google Drive 동기화 중…";
         try
         {
             var count = connectFirst
                 ? await _driveSyncService.ConnectAndSyncAsync(activity)
                 : await _driveSyncService.SyncAsync(activity);
+            _driveSyncRetryCount = 0;
+            _driveUploadTimer.Interval = TimeSpan.FromMilliseconds(500);
             var email = _settings.LoadGoogleDriveAccountEmail();
             if (status is not null) status.Text = $"{email} 계정 동기화 완료 ({count}개 채널)";
             if (!quiet) ShowNotification("Google Drive 동기화 완료");
@@ -1978,7 +1993,9 @@ internal sealed class AndroidHomeView : UserControl
         catch (Exception exception)
         {
             global::Android.Util.Log.Error("Google Drive sync failed", exception.ToString());
-            if (quiet) _driveSyncRetryPending = true;
+            _driveSyncRetryPending = true;
+            _driveSyncRetryCount = Math.Min(_driveSyncRetryCount + 1, 5);
+            _driveUploadTimer.Interval = TimeSpan.FromSeconds(Math.Min(60, 2 << _driveSyncRetryCount));
             if (status is not null) status.Text = $"Google Drive 동기화 실패: {exception.Message}";
             else if (!quiet && MainActivity.Current is { IsFinishing: false, IsDestroyed: false })
                 ShowNotification($"Google Drive 동기화 실패: {exception.Message}", isError: true);
@@ -1989,7 +2006,7 @@ internal sealed class AndroidHomeView : UserControl
             if (_isViewAttached)
             {
                 _driveCheckTimer.Start();
-                if (_driveUploadPending && !string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail()))
+                if ((_driveUploadPending || _driveSyncRetryPending) && !string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail()))
                 {
                     _driveUploadTimer.Stop();
                     _driveUploadTimer.Start();

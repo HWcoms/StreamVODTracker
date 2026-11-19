@@ -31,7 +31,7 @@ public static class DriveLibraryMerger
                 : localChannel.Channel;
             var media = localChannel.Media.Concat(remoteChannel.Media)
                 .GroupBy(item => item.VodId, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.OrderByDescending(item => item.UpdatedAt ?? item.PublishedAt ?? DateTimeOffset.MinValue).First())
+                .Select(MergeMedia)
                 .ToArray();
             merged.Add(new SavedChannelData(preferredChannel, media));
         }
@@ -42,6 +42,13 @@ public static class DriveLibraryMerger
     public static string GetChannelKey(SavedChannel channel) => GetChannelKey(channel.Platform, channel.ChannelId);
 
     public static string GetChannelKey(string platform, string channelId) => $"{platform}:{channelId}";
+
+    private static SavedMedia MergeMedia(IEnumerable<SavedMedia> versions)
+    {
+        var items = versions.ToArray();
+        var latest = items.OrderByDescending(item => item.UpdatedAt ?? item.PublishedAt ?? DateTimeOffset.MinValue).First();
+        return latest;
+    }
 
     private static DateTimeOffset GetChannelLastUpdate(SavedChannelData channel) =>
         channel.Media.Select(item => item.UpdatedAt ?? item.PublishedAt ?? DateTimeOffset.MinValue)

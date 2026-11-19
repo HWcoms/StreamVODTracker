@@ -21,6 +21,13 @@ internal sealed class LocalCsvDatabase : IVodRepository
         "VodId", "Title", "SourceType", "Url", "LocalFilePath", "PublishedAtUtc", "WatchStatus",
         "LastPositionSeconds", "Memo", "UpdatedAt", "ThumbnailUrl", "ThumbnailPath", "Favorite"
     ];
+    private static readonly string[] PreviousHeaderWithFavorite =
+    [
+        "RecordType", "Platform", "ChannelId", "ChannelName", "ChannelDescription", "ChannelUrl",
+        "ChannelProfileImageUrl", "ChannelProfileImagePath",
+        "VodId", "Title", "SourceType", "Url", "LocalFilePath", "PublishedAtUtc", "WatchStatus",
+        "LastPositionSeconds", "Memo", "UpdatedAt", "ThumbnailUrl", "ThumbnailPath", "Favorite"
+    ];
     private static readonly string[] PreviousCurrentProfileHeader =
     [
         "RecordType", "Platform", "ChannelId", "ChannelName", "ChannelDescription", "ChannelUrl",
@@ -99,6 +106,7 @@ internal sealed class LocalCsvDatabase : IVodRepository
                 var rows = ReadCsv(path);
                 if (rows.Count == 0) continue;
                 var hasProfileColumns = rows[0].SequenceEqual(Header, StringComparer.Ordinal);
+                var hasPreviousFavoriteColumns = rows[0].SequenceEqual(PreviousHeaderWithFavorite, StringComparer.Ordinal);
                 var hasPreviousCurrentProfileColumns = rows[0].SequenceEqual(PreviousCurrentProfileHeader, StringComparer.Ordinal);
                 var hasPreviousProfileColumns = rows[0].SequenceEqual(PreviousHeaderWithDuration, StringComparer.Ordinal);
                 var hasPreviousCurrentColumns = rows[0].SequenceEqual(PreviousCurrentHeader, StringComparer.Ordinal);
@@ -106,15 +114,15 @@ internal sealed class LocalCsvDatabase : IVodRepository
                 var hasPreviousColumns = rows[0].SequenceEqual(PreviousHeader, StringComparer.Ordinal);
                 var isProfileLegacy = rows[0].SequenceEqual(ProfileLegacyHeader, StringComparer.Ordinal);
                 var isLegacy = rows[0].SequenceEqual(LegacyHeader, StringComparer.Ordinal);
-                if (!hasProfileColumns && !hasPreviousCurrentProfileColumns && !hasPreviousProfileColumns && !hasPreviousCurrentColumns && !hasExtendedColumns && !hasPreviousColumns && !isProfileLegacy && !isLegacy) continue;
-                var hasChannelIdColumn = hasProfileColumns || hasPreviousCurrentProfileColumns || hasPreviousProfileColumns || hasPreviousCurrentColumns || hasExtendedColumns || hasPreviousColumns;
+                if (!hasProfileColumns && !hasPreviousFavoriteColumns && !hasPreviousCurrentProfileColumns && !hasPreviousProfileColumns && !hasPreviousCurrentColumns && !hasExtendedColumns && !hasPreviousColumns && !isProfileLegacy && !isLegacy) continue;
+                var hasChannelIdColumn = hasProfileColumns || hasPreviousFavoriteColumns || hasPreviousCurrentProfileColumns || hasPreviousProfileColumns || hasPreviousCurrentColumns || hasExtendedColumns || hasPreviousColumns;
                 var hasProfile = hasChannelIdColumn || isProfileLegacy;
                 var mediaStart = hasProfile ? 8 : 6;
                 SavedChannel? channel = null;
                 var media = new List<SavedMedia>();
                 foreach (var row in rows.Skip(1))
                 {
-                    var expectedColumns = hasProfileColumns ? Header.Length : hasPreviousCurrentProfileColumns ? PreviousCurrentProfileHeader.Length : hasPreviousProfileColumns ? PreviousHeaderWithDuration.Length : hasPreviousCurrentColumns ? PreviousCurrentHeader.Length : hasExtendedColumns ? PreviousExtendedHeader.Length : hasPreviousColumns ? PreviousHeader.Length : isProfileLegacy ? ProfileLegacyHeader.Length : LegacyHeader.Length;
+                    var expectedColumns = hasProfileColumns ? Header.Length : hasPreviousFavoriteColumns ? PreviousHeaderWithFavorite.Length : hasPreviousCurrentProfileColumns ? PreviousCurrentProfileHeader.Length : hasPreviousProfileColumns ? PreviousHeaderWithDuration.Length : hasPreviousCurrentColumns ? PreviousCurrentHeader.Length : hasExtendedColumns ? PreviousExtendedHeader.Length : hasPreviousColumns ? PreviousHeader.Length : isProfileLegacy ? ProfileLegacyHeader.Length : LegacyHeader.Length;
                     if (row.Count < expectedColumns && row[0] != "Channel") continue;
                     if (row[0] == "Channel")
                     {
@@ -132,7 +140,7 @@ internal sealed class LocalCsvDatabase : IVodRepository
                     else if (row[0] == "Media")
                     {
                         var mediaPlatform = string.IsNullOrWhiteSpace(row[1]) ? channel?.Platform ?? "" : row[1];
-                        if (hasProfileColumns || hasPreviousCurrentProfileColumns || hasPreviousProfileColumns)
+                        if (hasProfileColumns || hasPreviousFavoriteColumns || hasPreviousCurrentProfileColumns || hasPreviousProfileColumns)
                         {
                             var vodId = row[8];
                             var title = row[9];
@@ -142,7 +150,7 @@ internal sealed class LocalCsvDatabase : IVodRepository
                             DateTimeOffset? publishedAt = DateTimeOffset.TryParse(row[13], CultureInfo.InvariantCulture, DateTimeStyles.None, out var newDate) ? newDate : null;
                             var position = double.TryParse(row[15], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? seconds : 0;
                             DateTimeOffset? updatedAt = DateTimeOffset.TryParse(row[17], CultureInfo.InvariantCulture, DateTimeStyles.None, out var updated) ? updated : null;
-                            var favorite = hasProfileColumns && row.Count > 20 && bool.TryParse(row[20], out var parsedFavorite) && parsedFavorite;
+                            var favorite = (hasProfileColumns || hasPreviousFavoriteColumns) && row.Count > 20 && bool.TryParse(row[20], out var parsedFavorite) && parsedFavorite;
                             media.Add(new SavedMedia(title, mediaPlatform, NormalizeSourceType(sourceType, onlineUrl, localFilePath),
                                 GetSourceLabel(onlineUrl, localFilePath), onlineUrl ?? localFilePath ?? "", publishedAt,
                                 row[14], NullIfEmpty(row[18]), NullIfEmpty(row[19]), GetAvailability(localFilePath),

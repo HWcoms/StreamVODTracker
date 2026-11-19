@@ -11,9 +11,36 @@ internal static class AndroidVodMetadataService
     private const string UserAgent = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/131.0.0.0 Mobile Safari/537.36";
 
     public static Task<double?> GetDurationSecondsAsync(string platform, string? vodUrl, CancellationToken cancellationToken = default) =>
-        LibraryTransfer.NormalizePlatform(platform) == "SOOP"
-            ? GetSoopDurationSecondsAsync(vodUrl, cancellationToken)
-            : GetChzzkDurationSecondsAsync(vodUrl, cancellationToken);
+        IsYouTubeUrl(vodUrl)
+            ? GetYouTubeDurationSecondsAsync(vodUrl, cancellationToken)
+            : LibraryTransfer.NormalizePlatform(platform) == "SOOP"
+                ? GetSoopDurationSecondsAsync(vodUrl, cancellationToken)
+                : GetChzzkDurationSecondsAsync(vodUrl, cancellationToken);
+
+    private static bool IsYouTubeUrl(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+        (uri.Host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) || uri.Host.EndsWith(".youtube.com", StringComparison.OrdinalIgnoreCase) ||
+         uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("youtube-nocookie.com", StringComparison.OrdinalIgnoreCase));
+
+    private static async Task<double?> GetYouTubeDurationSecondsAsync(string? videoUrl, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(videoUrl, UriKind.Absolute, out var uri)) return null;
+        var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var videoId = uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase)
+            ? segments.FirstOrDefault()
+            : uri.Query.TrimStart('?').Split('&').Select(part => part.Split('=', 2))
+                .FirstOrDefault(pair => pair.Length == 2 && pair[0] == "v")?.ElementAtOrDefault(1)
+              ?? (segments.Length > 1 && new[] { "shorts", "embed", "live" }.Contains(segments[0], StringComparer.OrdinalIgnoreCase) ? segments[1] : null);
+        if (string.IsNullOrWhiteSpace(videoId)) return null;
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"https://www.youtube.com/watch?v={Uri.EscapeDataString(Uri.UnescapeDataString(videoId))}");
+        request.Headers.UserAgent.ParseAdd(UserAgent);
+        using var response = await SoopClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode) return null;
+        var html = await response.Content.ReadAsStringAsync(cancellationToken);
+        var match = System.Text.RegularExpressions.Regex.Match(html, "\\\"lengthSeconds\\\"\\s*:\\s*\\\"(?<seconds>\\d+)\\\"");
+        return match.Success && double.TryParse(match.Groups["seconds"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds) && seconds > 0
+            ? seconds : null;
+    }
 
     private static async Task<double?> GetChzzkDurationSecondsAsync(string? vodUrl, CancellationToken cancellationToken)
     {

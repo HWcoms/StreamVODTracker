@@ -45,13 +45,28 @@ internal sealed class AndroidDriveSyncService(AndroidLibraryStore libraryStore, 
         await _syncLock.WaitAsync(cancellationToken);
         try
         {
-            var remote = await _drive.DownloadLibraryAsync(accessToken, cancellationToken);
-            // Reload after network I/O so edits made locally while Drive was downloading are included.
-            var local = libraryStore.LoadAll();
-            var merged = PreserveDeviceOnlyData(DriveLibraryMerger.Merge(local, remote), local);
-            await libraryStore.ReplaceFromDriveAsync(merged);
-            await _drive.UploadLibraryAsync(accessToken, merged, cancellationToken);
-            return merged.Count;
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
+                var remote = await _drive.DownloadLibraryAsync(accessToken, cancellationToken);
+                // Reload after network I/O so edits made locally while Drive was downloading are included.
+                var local = libraryStore.LoadAll();
+                foreach (var line in DriveLibraryDiagnostics.DescribeDifferences("android.local-vs-drive", local, remote))
+                    global::Android.Util.Log.Debug("VODSync", line);
+                var merged = PreserveDeviceOnlyData(DriveLibraryMerger.Merge(local, remote), local);
+                foreach (var line in DriveLibraryDiagnostics.DescribeDifferences("android.merged-vs-drive", merged, remote))
+                    global::Android.Util.Log.Debug("VODSync", line);
+                await libraryStore.ReplaceFromDriveAsync(merged);
+                if (!DriveLibraryCodec.HasSameContent(merged, remote) &&
+                    !await _drive.TryUploadIfUnchangedAsync(accessToken, merged, cancellationToken))
+                {
+                    global::Android.Util.Log.Debug("VODSync", $"remote-changed-before-upload retry={attempt}");
+                    continue;
+                }
+                global::Android.Util.Log.Debug("VODSync", $"sync-complete channels={merged.Count} attempts={attempt}");
+                return merged.Count;
+            }
+
+            throw new InvalidOperationException("Google Drive가 동기화 중 계속 변경되어 업로드를 보류했습니다. 다시 동기화해 주세요.");
         }
         finally
         {

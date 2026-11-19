@@ -13,18 +13,18 @@ internal sealed class AndroidDriveSyncClient
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(45) };
     private string? _fileId;
     private string? _folderId;
-    private string? _lastModifiedTime;
+    private string? _lastVersion;
 
     public async Task<IReadOnlyList<SavedChannelData>> DownloadLibraryAsync(string accessToken, CancellationToken cancellationToken = default)
     {
         var fileId = await FindOrMigrateSyncFileAsync(accessToken, cancellationToken);
         if (fileId is null)
         {
-            _lastModifiedTime = null;
+            _lastVersion = null;
             return [];
         }
 
-        _lastModifiedTime = await GetModifiedTimeAsync(accessToken, fileId, cancellationToken);
+        _lastVersion = await GetFileVersionAsync(accessToken, fileId, cancellationToken);
         using var request = AuthorizedRequest(HttpMethod.Get,
             $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}?alt=media", accessToken);
         using var response = await Http.SendAsync(request, cancellationToken);
@@ -38,8 +38,8 @@ internal sealed class AndroidDriveSyncClient
     {
         var fileId = _fileId ?? await FindOrMigrateSyncFileAsync(accessToken, cancellationToken);
         if (fileId is null) return false;
-        var modifiedTime = await GetModifiedTimeAsync(accessToken, fileId, cancellationToken);
-        return modifiedTime is not null && !string.Equals(modifiedTime, _lastModifiedTime, StringComparison.Ordinal);
+        var version = await GetFileVersionAsync(accessToken, fileId, cancellationToken);
+        return version is not null && !string.Equals(version, _lastVersion, StringComparison.Ordinal);
     }
 
     public async Task UploadLibraryAsync(string accessToken, IEnumerable<SavedChannelData> library, CancellationToken cancellationToken = default)
@@ -53,10 +53,32 @@ internal sealed class AndroidDriveSyncClient
             _fileId = await CreateSyncFileAsync(accessToken, _folderId!, bytes, cancellationToken);
         else
         {
-            await UpdateSyncFileAsync(accessToken, fileId, bytes, cancellationToken);
+            _lastVersion = await UpdateSyncFileAsync(accessToken, fileId, bytes, cancellationToken);
             _fileId = fileId;
         }
-        _lastModifiedTime = await GetModifiedTimeAsync(accessToken, _fileId!, cancellationToken);
+        if (_lastVersion is null) _lastVersion = await GetFileVersionAsync(accessToken, _fileId!, cancellationToken);
+    }
+
+    // Best-effort lost-update protection. Google Drive v3 does not document atomic
+    // compare-and-swap for this media upload, so this only catches changes seen before PATCH.
+    public async Task<bool> TryUploadIfUnchangedAsync(string accessToken, IEnumerable<SavedChannelData> library, CancellationToken cancellationToken = default)
+    {
+        var fileId = await FindOrMigrateSyncFileAsync(accessToken, cancellationToken);
+        if (fileId is null || _lastVersion is null)
+        {
+            await UploadLibraryAsync(accessToken, library, cancellationToken);
+            return true;
+        }
+
+        var currentVersion = await GetFileVersionAsync(accessToken, fileId, cancellationToken);
+        if (!string.Equals(currentVersion, _lastVersion, StringComparison.Ordinal))
+        {
+            _lastVersion = currentVersion;
+            return false;
+        }
+
+        await UploadLibraryAsync(accessToken, library, cancellationToken);
+        return true;
     }
 
     private async Task<string?> FindOrMigrateSyncFileAsync(string accessToken, CancellationToken cancellationToken)
@@ -72,14 +94,14 @@ internal sealed class AndroidDriveSyncClient
         return file.Id;
     }
 
-    private static async Task<string?> GetModifiedTimeAsync(string accessToken, string fileId, CancellationToken cancellationToken)
+    private static async Task<string?> GetFileVersionAsync(string accessToken, string fileId, CancellationToken cancellationToken)
     {
         using var request = AuthorizedRequest(HttpMethod.Get,
-            $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}?fields=modifiedTime,trashed", accessToken);
+            $"https://www.googleapis.com/drive/v3/files/{Uri.EscapeDataString(fileId)}?fields=version,trashed", accessToken);
         using var response = await Http.SendAsync(request, cancellationToken);
         using var document = JsonDocument.Parse(await ReadBodyAsync(response, "Google Drive 동기화 상태를 확인하지 못했습니다.", cancellationToken));
         if (document.RootElement.TryGetProperty("trashed", out var trashed) && trashed.GetBoolean()) return null;
-        return document.RootElement.TryGetProperty("modifiedTime", out var modifiedTime) ? modifiedTime.GetString() : null;
+        return document.RootElement.TryGetProperty("version", out var version) ? version.GetString() : null;
     }
 
     private static async Task<DriveFile?> FindSyncFileInFolderAsync(string accessToken, string parentId, CancellationToken cancellationToken)
@@ -153,14 +175,16 @@ internal sealed class AndroidDriveSyncClient
             ?? throw new InvalidOperationException("Google Drive에서 동기화 파일 ID를 받지 못했습니다.");
     }
 
-    private static async Task UpdateSyncFileAsync(string accessToken, string fileId, byte[] bytes, CancellationToken cancellationToken)
+    private static async Task<string?> UpdateSyncFileAsync(string accessToken, string fileId, byte[] bytes, CancellationToken cancellationToken)
     {
         using var request = AuthorizedRequest(HttpMethod.Patch,
-            $"https://www.googleapis.com/upload/drive/v3/files/{Uri.EscapeDataString(fileId)}?uploadType=media", accessToken);
+            $"https://www.googleapis.com/upload/drive/v3/files/{Uri.EscapeDataString(fileId)}?uploadType=media&fields=version", accessToken);
         request.Content = new ByteArrayContent(bytes);
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         using var response = await Http.SendAsync(request, cancellationToken);
-        _ = await ReadBodyAsync(response, "Google Drive 동기화 파일을 갱신하지 못했습니다.", cancellationToken);
+        var body = await ReadBodyAsync(response, "Drive upload failed.", cancellationToken);
+        using var document = JsonDocument.Parse(body);
+        return document.RootElement.TryGetProperty("version", out var version) ? version.GetString() : null;
     }
 
     private static HttpRequestMessage AuthorizedRequest(HttpMethod method, string url, string accessToken)
