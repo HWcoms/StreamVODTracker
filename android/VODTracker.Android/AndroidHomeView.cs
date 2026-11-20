@@ -62,6 +62,7 @@ internal sealed class AndroidHomeView : UserControl
     private bool _driveStartupSyncStarted;
     private bool _driveUploadPending;
     private bool _driveSyncRetryPending;
+    private bool _isStartupVodRefresh;
     private bool _isViewAttached;
     private string _selectedSection = "all";
     private string? _selectedChannelKey;
@@ -285,10 +286,10 @@ internal sealed class AndroidHomeView : UserControl
         {
             _isViewAttached = true;
             _driveCheckTimer.Start();
-            if (!_driveStartupSyncStarted && !string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail()))
+            if (!_driveStartupSyncStarted)
             {
                 _driveStartupSyncStarted = true;
-                Dispatcher.UIThread.Post(() => _ = RunDriveSyncAsync(connectFirst: false, quiet: true, refreshUiOnSuccess: true));
+                Dispatcher.UIThread.Post(() => _ = StartupSyncAndRefreshLatestVideosAsync());
             }
         };
         DetachedFromVisualTree += (_, _) =>
@@ -301,6 +302,57 @@ internal sealed class AndroidHomeView : UserControl
         Grid.SetRow(_pageHost, 2);
 
         ShowLibrary();
+    }
+
+    private async Task StartupSyncAndRefreshLatestVideosAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail()))
+            await RunDriveSyncAsync(connectFirst: false, quiet: true, refreshUiOnSuccess: true);
+        var channels = _libraryStore.LoadAll().ToArray();
+        var importedCount = 0;
+        _isStartupVodRefresh = true;
+        try
+        {
+            foreach (var data in channels)
+            {
+                try
+                {
+                    var videos = await AndroidVodListingService.FetchLatestAsync(data.Channel);
+                    var updatedAt = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+                    var rows = videos.Select(video => new TransferMedia(
+                        data.Channel.Platform,
+                        data.Channel.ChannelId,
+                        data.Channel.Name,
+                        data.Channel.Url,
+                        video.VodId,
+                        video.Title,
+                        video.Url,
+                        video.PublishedAt,
+                        WatchStatusUnwatched,
+                        0,
+                        string.Empty,
+                        string.Empty,
+                        updatedAt,
+                        video.ThumbnailUrl ?? string.Empty)).ToArray();
+                    importedCount += await Task.Run(() => _libraryStore.Import(rows));
+                }
+                catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidDataException or IOException or InvalidOperationException)
+                {
+                    global::Android.Util.Log.Warn("VOD startup refresh", $"Failed for {data.Channel.Url}: {exception.Message}");
+                }
+            }
+        }
+        finally { _isStartupVodRefresh = false; }
+
+        if (_driveUploadPending && !string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail()))
+            await RunDriveSyncAsync(connectFirst: false, quiet: true);
+        if (importedCount > 0)
+            ShowNotification($"시작 동기화 후 신규 영상 {importedCount}개를 추가했습니다.");
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (_isViewAttached && !_isSettingsActive) RefreshCurrentPageAfterDriveSync();
+        });
     }
 
     private void ShowLibrary(bool autoRefreshSelectedChannelVods = true)
@@ -1938,6 +1990,7 @@ internal sealed class AndroidHomeView : UserControl
         if (string.IsNullOrWhiteSpace(_settings.LoadGoogleDriveAccountEmail())) return;
         var alreadyPending = _driveUploadPending;
         _driveUploadPending = true;
+        if (_isStartupVodRefresh) return;
         _driveSyncRetryCount = 0;
         _driveUploadTimer.Interval = TimeSpan.FromMilliseconds(500);
         global::Android.Util.Log.Debug("VODSync", "local-change-upload-scheduled delayMs=500");

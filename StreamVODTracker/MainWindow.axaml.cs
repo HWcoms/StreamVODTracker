@@ -365,17 +365,68 @@ public partial class MainWindow : Window
     private async Task RestoreGoogleDriveAndSyncAsync()
     {
         if (!OperatingSystem.IsWindows()) return;
+        GoogleDriveCredentials? credentials = null;
         try
         {
-            var credentials = WindowsCredentialVault.ReadGoogleDrive();
-            if (credentials is null || string.IsNullOrWhiteSpace(_settingsStore.LoadGoogleOAuthClientId())) return;
-            await SyncGoogleDriveLibraryAsync(credentials, "startup");
+            credentials = WindowsCredentialVault.ReadGoogleDrive();
+            if (credentials is not null && !string.IsNullOrWhiteSpace(_settingsStore.LoadGoogleOAuthClientId()))
+                await SyncGoogleDriveLibraryAsync(credentials, "startup");
         }
         catch (Exception exception)
         {
             Debug.WriteLine($"Google Drive startup sync failed: {exception.Message}");
             ShowDriveSyncNotification($"Google Drive sync failed: {exception.Message}", isError: true);
+            return;
         }
+
+        var added = await AddMissingLatestVideosAsync();
+        if (added > 0 && credentials is not null && !string.IsNullOrWhiteSpace(_settingsStore.LoadGoogleOAuthClientId()))
+        {
+            _driveUploadTimer.Stop();
+            try { await SyncGoogleDriveLibraryAsync(credentials, "startup-vod-refresh"); }
+            catch (Exception exception) { ShowDriveSyncNotification($"Google Drive sync failed: {exception.Message}", isError: true); }
+        }
+    }
+
+    private async Task<int> AddMissingLatestVideosAsync()
+    {
+        var added = 0;
+        _driveUploadTimer.Stop();
+        foreach (var originalChannel in _channels.ToArray())
+        {
+            try
+            {
+                var videos = await FetchChannelVideosAsync(originalChannel);
+                var channel = _channels.FirstOrDefault(item => item.Platform == originalChannel.Platform && item.ChannelId == originalChannel.ChannelId);
+                if (channel is null) continue;
+                foreach (var video in videos)
+                {
+                    var existing = _allCards.FirstOrDefault(card =>
+                        string.Equals(card.OnlineUrl?.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase));
+                    if (existing is not null)
+                    {
+                        if (video.DurationSeconds is > 0) existing.SetDuration(video.DurationSeconds);
+                        _ = RefreshCardThumbnailAsync(existing, video.ThumbnailUrl);
+                        continue;
+                    }
+
+                    var card = new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
+                        "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl,
+                        durationSeconds: video.DurationSeconds);
+                    _allCards.Add(card);
+                    _ = RefreshCardThumbnailAsync(card, video.ThumbnailUrl);
+                    added++;
+                }
+                SaveChannel(channel);
+            }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidOperationException)
+            {
+                AppLogger.Error("StartupVodRefresh", $"Failed to fetch latest videos for {originalChannel.ChannelUrl}", exception);
+            }
+        }
+        UpdateCards();
+        if (added > 0) ShowRefreshNotification($"시작 동기화 후 신규 영상 {added}개를 추가했습니다.");
+        return added;
     }
 
     private async Task<int> SyncGoogleDriveLibraryAsync(GoogleDriveCredentials credentials, string trigger = "manual")
@@ -1159,7 +1210,12 @@ public partial class MainWindow : Window
             ShowAllChannelsCard.Classes.Set("selected", false);
             UpdateCards();
             if (!wasLasso && pressedChannel is not null && _selectedChannelUrls.Contains(pressedChannel.ChannelUrl))
-                _ = RefreshChannelDurationsAsync(pressedChannel);
+            {
+                if (_selectedChannelUrls.Count == 1)
+                    _ = RefreshSelectedChannelAfterDriveSyncAsync(pressedChannel.Platform, pressedChannel.ChannelId);
+                else
+                    _ = RefreshChannelDurationsAsync(pressedChannel);
+            }
             return;
         }
         if (!_isLassoSelecting) return;
@@ -1168,6 +1224,28 @@ public partial class MainWindow : Window
         SelectionRectangle.IsVisible = false;
         e.Pointer.Capture(null);
         UpdateSelectionButtons();
+    }
+
+    private async Task RefreshSelectedChannelAfterDriveSyncAsync(string platform, string channelId)
+    {
+        var credentials = OperatingSystem.IsWindows() ? WindowsCredentialVault.ReadGoogleDrive() : null;
+        if (credentials is not null && !string.IsNullOrWhiteSpace(_settingsStore.LoadGoogleOAuthClientId()))
+        {
+            try
+            {
+                await SyncGoogleDriveLibraryAsync(credentials, "channel-selected");
+            }
+            catch (Exception exception)
+            {
+                ShowDriveSyncNotification($"Google Drive sync failed: {exception.Message}", isError: true);
+                return;
+            }
+        }
+
+        var channel = _channels.FirstOrDefault(item => item.Platform == platform && item.ChannelId == channelId);
+        if (channel is null || !_selectedChannelUrls.Contains(channel.ChannelUrl) || _selectedChannelUrls.Count != 1) return;
+        _selectedChannel = channel;
+        RefreshChannelVideos_Click(null, new RoutedEventArgs());
     }
 
     private void UpdateChannelLasso(Point current)
