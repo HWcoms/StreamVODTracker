@@ -318,7 +318,6 @@ internal sealed class AndroidHomeView : UserControl
                 try
                 {
                     var videos = await AndroidVodListingService.FetchLatestAsync(data.Channel);
-                    var updatedAt = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     var rows = videos.Select(video => new TransferMedia(
                         data.Channel.Platform,
                         data.Channel.ChannelId,
@@ -332,7 +331,7 @@ internal sealed class AndroidHomeView : UserControl
                         0,
                         string.Empty,
                         string.Empty,
-                        updatedAt,
+                        (video.PublishedAt ?? DateTimeOffset.MinValue).ToString("O", CultureInfo.InvariantCulture),
                         video.ThumbnailUrl ?? string.Empty)).ToArray();
                     importedCount += await Task.Run(() => _libraryStore.Import(rows));
                 }
@@ -959,7 +958,6 @@ internal sealed class AndroidHomeView : UserControl
             {
                 var videos = await AndroidVodListingService.FetchLatestAsync(data.Channel);
                 if (!ReferenceEquals(_activePageScrollViewer, mediaScrollViewer)) return;
-                var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                 var rows = videos.Select(video => new TransferMedia(
                     platform,
                     data.Channel.ChannelId,
@@ -973,7 +971,7 @@ internal sealed class AndroidHomeView : UserControl
                     0,
                     string.Empty,
                     string.Empty,
-                    now,
+                    (video.PublishedAt ?? DateTimeOffset.MinValue).ToString("O", CultureInfo.InvariantCulture),
                     video.ThumbnailUrl ?? string.Empty)).ToArray();
                 // Importing a large channel library parses/merges many records. Keep it off
                 // the UI thread so the indeterminate spinner can continue animating.

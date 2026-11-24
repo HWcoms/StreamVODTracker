@@ -412,6 +412,7 @@ public partial class MainWindow : Window
 
                     var card = new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
                         "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl,
+                        updatedAt: video.PublishedAt ?? DateTimeOffset.MinValue,
                         durationSeconds: video.DurationSeconds);
                     _allCards.Add(card);
                     _ = RefreshCardThumbnailAsync(card, video.ThumbnailUrl);
@@ -2579,6 +2580,7 @@ public partial class MainWindow : Window
                 }
                 var card = new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
                     "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl,
+                    updatedAt: video.PublishedAt ?? DateTimeOffset.MinValue,
                     durationSeconds: video.DurationSeconds);
                 _allCards.Add(card);
                 addedCards.Add(card);
@@ -2692,6 +2694,7 @@ public partial class MainWindow : Window
                 if (_allCards.Any(card => string.Equals(card.OnlineUrl?.TrimEnd('/'), video.Url.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))) continue;
                 var card = new MediaCard(video.Title, channel.Platform, "VOD", video.Url,
                     "", "미시청", video.Url, channel.ChannelUrl, video.PublishedAt, video.ThumbnailUrl,
+                    updatedAt: video.PublishedAt ?? DateTimeOffset.MinValue,
                     durationSeconds: video.DurationSeconds);
                 _allCards.Add(card);
                 // Duration lookup is queued only after the new card enters the viewport.
