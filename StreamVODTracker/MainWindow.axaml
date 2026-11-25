@@ -98,6 +98,11 @@
                                 </StackPanel>
                             </Button>
                         </Border>
+                        <StackPanel Orientation="Horizontal" Spacing="6" Margin="4,8,0,0" VerticalAlignment="Center">
+                            <Ellipse Width="6" Height="6" Fill="#E3A94B" VerticalAlignment="Center" />
+                            <TextBlock x:Name="PreReleaseBadge" Text="PRE" FontSize="10" FontWeight="Bold" Foreground="#E3A94B" VerticalAlignment="Center" />
+                            <TextBlock x:Name="AppVersionText" FontSize="11" Foreground="#85899B" VerticalAlignment="Center" />
+                        </StackPanel>
                     </StackPanel>
                 </Border>
             </Grid>

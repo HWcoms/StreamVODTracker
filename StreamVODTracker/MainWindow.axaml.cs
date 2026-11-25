@@ -78,6 +78,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        AppVersionText.Text = GetAppVersionLabel();
+        PreReleaseBadge.IsVisible = IsPreReleaseBuild();
         UpdateViewButtonStates();
         _sortDescending = _settingsStore.LoadSortDescending();
         _cardDisplayLimit = _settingsStore.LoadCardBatchSize();
@@ -157,6 +159,14 @@ public partial class MainWindow : Window
         UpdateCards();
         RefreshUnknownVisibleCardDurations();
     }
+
+    private static string GetAppVersionLabel() =>
+        $"v{typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"}";
+
+    private static bool IsPreReleaseBuild() =>
+        typeof(MainWindow).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion.Split('+')[0].Contains('-') == true;
 
     private async void ChannelStatusTimer_Tick(object? sender, EventArgs e) => await RefreshChannelStatusesAsync();
 

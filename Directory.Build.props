@@ -3,6 +3,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>14.0</LangVersion>
+    <!-- Keep the app version here; increment the patch digit for small changes. -->
+    <VersionPrefix>0.6.1</VersionPrefix>
+    <VersionSuffix>test</VersionSuffix>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>
 </Project>

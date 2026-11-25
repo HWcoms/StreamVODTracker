@@ -2274,9 +2274,29 @@ internal sealed class AndroidHomeView : UserControl
         _drawerSettingsButton = settingsButton;
         var drawerFooter = new StackPanel
         {
-            Orientation = Avalonia.Layout.Orientation.Horizontal,
-            Spacing = 8,
-            Children = { themeButton, settingsButton }
+            Spacing = 10,
+            Children =
+            {
+                new StackPanel
+                {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    Spacing = 8,
+                    Children = { themeButton, settingsButton }
+                },
+                new Border { Height = 1, Background = Brush("#303342") },
+                new StackPanel
+                {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    Spacing = 6,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children =
+                    {
+                        new Border { Width = 6, Height = 6, CornerRadius = new CornerRadius(3), Background = Brush("#E3A94B"), VerticalAlignment = VerticalAlignment.Center, IsVisible = IsPreReleaseBuild() },
+                        new TextBlock { Text = "PRE", FontSize = 10, FontWeight = FontWeight.Bold, Foreground = Brush("#E3A94B"), VerticalAlignment = VerticalAlignment.Center, IsVisible = IsPreReleaseBuild() },
+                        new TextBlock { Text = GetAppVersionLabel(), FontSize = 11, Foreground = Brush("#85899B"), VerticalAlignment = VerticalAlignment.Center }
+                    }
+                }
+            }
         };
         var drawerLayout = new Grid
         {
@@ -2304,6 +2324,14 @@ internal sealed class AndroidHomeView : UserControl
         drawer.ZIndex = 1;
         return overlay;
     }
+
+    private static string GetAppVersionLabel() =>
+        $"v{typeof(AndroidHomeView).Assembly.GetName().Version?.ToString(3) ?? "0.0.0"}";
+
+    private static bool IsPreReleaseBuild() =>
+        typeof(AndroidHomeView).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion.Split('+')[0].Contains('-') == true;
 
     private Button DrawerItem(string icon, string label, string section)
     {
